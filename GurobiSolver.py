@@ -65,8 +65,8 @@ programs = {
 }
 
 # Timeslots: 5 slots/day × 5 days = 25 weekly slots
-num_days = 5
-slots_per_day = 5
+num_days = 1
+slots_per_day = 4
 num_timeslots = num_days * slots_per_day
 timeslots = list(range(1, num_timeslots + 1))
 
@@ -101,10 +101,10 @@ x = model.addVars(
 )
 
 # s_cap[c,t,r] — capacity overflow slack
-s_cap = model.addVars(
-    courses, timeslots, room_list,
-    vtype=GRB.CONTINUOUS, lb=0.0, name="s_cap"
-)
+# s_cap = model.addVars(
+#     courses, timeslots, room_list,
+#     vtype=GRB.CONTINUOUS, lb=0.0, name="s_cap"
+# )
 
 # s_overlap[g,t] — program overlap slack
 s_overlap = model.addVars(
@@ -123,8 +123,9 @@ s_wl = model.addVars(
 # min  α Σ s_cap  +  β Σ s_overlap  +  γ Σ s_wl
 
 model.setObjective(
-    alpha * s_cap.sum()
-    + beta * s_overlap.sum()
+    # alpha * s_cap.sum()
+    # +
+    beta * s_overlap.sum()
     + gamma * s_wl.sum(),
     GRB.MINIMIZE,
 )
@@ -169,7 +170,8 @@ for c in courses:
             overflow = demand[c] - kappa[r]
             if overflow > 0:
                 model.addConstr(
-                    s_cap[c, t, r] >= overflow * x[c, t, r],
+                    # s_cap[c, t, r] >= overflow * x[c, t, r],
+                    0 >= overflow * x[c, t, r],
                     name=f"S1_cap_{c}_{r}_t{t}",
                 )
             # When overflow <= 0, s_cap >= 0 is already satisfied by lb=0
@@ -226,8 +228,8 @@ if model.Status in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
     print("  OPTIMAL TIMETABLE")
     print("=" * 65)
     print(f"  Objective value: {model.ObjVal:.2f}")
-    print(f"  Total capacity penalty:  "
-          f"{alpha * sum(s_cap[c,t,r].X for c in courses for t in timeslots for r in room_list):.2f}")
+    # print(f"  Total capacity penalty:  "
+    #       f"{alpha * sum(s_cap[c,t,r].X for c in courses for t in timeslots for r in room_list):.2f}")
     print(f"  Total overlap penalty:   "
           f"{beta * sum(s_overlap[g,t].X for g in programs for t in timeslots):.2f}")
     print(f"  Total workload penalty:  "
