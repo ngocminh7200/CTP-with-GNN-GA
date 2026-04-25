@@ -10,6 +10,7 @@ from collections import defaultdict
 #from node2vec import Node2Vec
 
 df1=DataIntegration.groups
+df1['Course_Level']=df1['Code'].str[2:3]
 df2=DataIntegration.teaching_rooms
 
 df4=DataIntegration.staff_df
@@ -152,12 +153,12 @@ def feed_gurobi(df_course,df_classroom,ls_professor):
     demand={}
     for i in range(len(df_course)):
         demand[df_course.iloc[i]['Code']]=df_course.iloc[i]['NUMSTU']
-    programs={department:index.tolist() for department, index in df_course.groupby('Department').groups.items()}
+    programs={department_level:list(index) for department_level,index in df_course.groupby(['Department','Course_Level']).groups.items()}
     return courses,professors,rooms,demand,programs
 e=feed_gurobi(a, b, d)
     
 
-    
+        
     
     
     
