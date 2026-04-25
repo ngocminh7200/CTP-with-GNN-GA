@@ -4,6 +4,9 @@ import DataIntegration
 import random
 import networkx as nx
 import matplotlib.pyplot as plt
+import math
+from collections import defaultdict
+
 #from node2vec import Node2Vec
 
 df1=DataIntegration.groups
@@ -14,6 +17,20 @@ df4=df4.reset_index(drop=True)
 department_list=df1['Department'].unique().tolist()
 
 num_ts=25
+staff_list=df4['Staff'].unique().tolist()
+professor_to_index={name:i for i,name in enumerate(staff_list)}
+
+course_to_professor=defaultdict(set)
+professor_to_course=defaultdict(set)
+
+for i in range(len(df4)):
+    course_to_professor[df4['Code'][i]].add(professor_to_index[df4['Staff'][i]])
+    professor_to_course[professor_to_index[df4['Staff'][i]]].add(df4['Code'][i])
+
+
+
+
+
 
 def course_sampling(num_dpt=3,num_courses=50,seed=111):
     random.seed(seed)
@@ -28,7 +45,22 @@ def classroom_sampling(num_rooms=10,seed=111):
     return df
 b=classroom_sampling()
 
-def generating_trash_schedule(df_course,df_classroom,seed=111):
+def professor_sampling(df_course,seed=111):
+    random.seed(seed)
+    pf_list=[]
+    for i in range(len(df_course)):
+        qualified_pf=list(course_to_professor[df_course.iloc[i]['Code']])
+        nm=math.ceil(len(qualified_pf)/2)
+        qualified_pf=random.sample(qualified_pf,k=nm)
+        pf_list=pf_list+qualified_pf
+    pf_list=set(pf_list)
+    return list(pf_list)
+
+d=professor_sampling(a)
+        
+
+
+def generating_trash_schedule(df_course,df_classroom,ls_professor,seed=111):
     random.seed(seed)
 
     num_rooms=len(df_classroom)
@@ -51,15 +83,14 @@ def generating_trash_schedule(df_course,df_classroom,seed=111):
         nmst=nmst+[st]
         code=df1['Code'][course_idx[i]]
         cd=cd+[code]
-        dftp=df4[df4['Code']==code]
-        prfs=prfs+random.sample(list(dftp.index), k=1)
+        prfs=prfs+[random.choice(list(course_to_professor[code]&set(ls_professor)))]
         department=df1['Department'][course_idx[i]]
         dpt=dpt+[department]
         
     df=pd.DataFrame({'course index':course_idx,'code':cd,'department':dpt,'timeslot':ts,'classroom index':rm,'professor index':prfs,'capacity':cpct,'numstu':nmst})
     
     return df
-c=generating_trash_schedule(a,b)
+c=generating_trash_schedule(a,b,d)
 
 
 
@@ -109,6 +140,21 @@ g=schedule_to_graph(c)
 #     return node2vec
 # aggregation(g)  
     
+    
+def feed_gurobi(df_course,df_classroom,ls_professor):
+    courses=df_course.index
+    professors={}
+    for i in range(len(ls_professor)):
+        professors[ls_professor[i]]=list(professor_to_course[ls_professor[i]])
+    rooms={}
+    for i in range(len(df_classroom)):
+        rooms[df_classroom.iloc[i]['Host Key']]=df_classroom.iloc[i]['Capacity']
+    demand={}
+    for i in range(len(df_course)):
+        demand[df_course.iloc[i]['Code']]=df_course.iloc[i]['NUMSTU']
+    programs={department:index.tolist() for department, index in df_course.groupby('Department').groups.items()}
+    return courses,professors,rooms,demand,programs
+e=feed_gurobi(a, b, d)
     
 
     
