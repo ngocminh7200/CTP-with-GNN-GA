@@ -206,7 +206,7 @@ class Instance:
     
 
     def get_sizes(self):
-        return len(self.course_list), len(self.room_list), self.timeslots, len(self.C_p), len(self.C_g)
+        return len(self.course_list), len(self.room_list), len(self.timeslots), len(self.C_p), len(self.C_g)
     
     
     def df_solution(self):
