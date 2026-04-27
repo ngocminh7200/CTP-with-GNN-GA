@@ -1,25 +1,33 @@
 import gurobipy as gp
 from gurobipy import GRB
+import pandas as pd
+
+def slot_label(t, slots_per_day=5):
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    day_idx = (t - 1) // slots_per_day
+    slot_idx = (t - 1) % slots_per_day + 1
+    start_hour = 8 + (slot_idx - 1) * 2  # first slot starts at 08:00
+    return f"{day_names[day_idx]} {start_hour:02d}:00-{start_hour + 2:02d}:00"
 
 class Instance:
     def __init__(self, courses, rooms, timeslots, professors):
         self.courses = courses
         self.rooms = rooms
-        self.timeslots = timeslots
+        self.timeslots = range(1,timeslots+1)
         self.professors = professors
 
         #TODO: remove duplicates
-        self.course_list = courses['Code']
-        self.room_list = rooms['Host Key']
+        self.course_list = courses['Index'].tolist()
+        self.room_list = rooms['Host Key'].tolist()
 
-        self.C_p = professors.to_dict()
-        self.C_g = courses[['Program', 'Code']].to_dict()
-        self.demand = courses[['Code', 'NUMSTU']].to_dict()
-        self.capacity = rooms[['Host Key', 'Capacity']].to_dict()
+        self.C_p = courses.groupby('P-Index')['Index'].apply(list).to_dict()
+        self.C_g = courses.groupby('dl')['Index'].apply(list).to_dict()
+        self.demand = courses.set_index('Index')['NUMSTU'].to_dict()
+        self.capacity = rooms.set_index('Host Key')['Capacity'].to_dict()
 
-        self.alpha = 0.1
+        #self.alpha = 0.1
         self.beta = 0.1
-        self.gamma = 0.1
+        self.gamma = 0.01
 
     def generate_Gurobi_model(self):
 
@@ -28,19 +36,19 @@ class Instance:
         # ── Decision variables ──
 
         # x[c,t,r] — primary binary assignment
-        x = self.model.addVars(
-            self.courses['Code'], self.timeslots, self.room_list,
+        self.x = self.model.addVars(
+            self.course_list, self.timeslots, self.room_list,
             vtype=GRB.BINARY, name="x"
         )
 
         # s_overlap[g,t] — program overlap slack
-        s_overlap = self.model.addVars(
-            list(self.courses['Program']), self.timeslots,
+        self.s_overlap = self.model.addVars(
+            list(self.C_g.keys()), self.timeslots,
             vtype=GRB.CONTINUOUS, lb=0.0, name="s_overlap"
         )
 
         # s_overlap_global[t] — overall overlap slack
-        s_overlap_global = self.model.addVars(
+        self.s_overlap_global = self.model.addVars(
             self.timeslots,
             vtype=GRB.CONTINUOUS, lb=0.0, name="s_overlap_global"
         )
@@ -54,8 +62,8 @@ class Instance:
         self.model.setObjective(
             # self.alpha * s_cap.sum()
             # +
-            self.beta * s_overlap.sum()
-            + self.gamma * s_overlap_global.sum(),
+            self.beta * self.s_overlap.sum()
+            + self.gamma * self.s_overlap_global.sum(),
             GRB.MINIMIZE,
         )
 
@@ -66,7 +74,7 @@ class Instance:
         # H1 — Course assignment: each course assigned to exactly one (t, r) pair
         for c in self.course_list:
             self.model.addConstr(
-                gp.quicksum(x[c, t, r] for t in self.timeslots for r in self.room_list) == 1,
+                gp.quicksum(self.x[c, t, r] for t in self.timeslots for r in self.room_list) == 1,
                 name=f"H1_assign_{c}",
             )
 
@@ -74,7 +82,7 @@ class Instance:
         for r in self.room_list:
             for t in self.timeslots:
                 self.model.addConstr(
-                    gp.quicksum(x[c, t, r] for c in self.course_list) <= 1,
+                    gp.quicksum(self.x[c, t, r] for c in self.course_list) <= 1,
                     name=f"H2_room_{r}_t{t}",
                 )
 
@@ -82,7 +90,7 @@ class Instance:
         for p, p_courses in self.C_p.items():
             for t in self.timeslots:
                 self.model.addConstr(
-                    gp.quicksum(x[c, t, r] for c in p_courses for r in self.room_list) <= 1,
+                    gp.quicksum(self.x[c, t, r] for c in p_courses for r in self.room_list) <= 1,
                     name=f"H3_prof_{p}_t{t}",
                 )
 
@@ -98,7 +106,7 @@ class Instance:
                     if overflow > 0:
                         self.model.addConstr(
                             # s_cap[c, t, r] >= overflow * x[c, t, r],
-                            0 >= overflow * x[c, t, r],
+                            0 >= overflow * self.x[c, t, r],
                             name=f"S1_cap_{c}_{r}_t{t}",
                         )
                     # When overflow <= 0, s_cap >= 0 is already satisfied by lb=0
@@ -108,18 +116,18 @@ class Instance:
         for g, g_courses in self.C_g.items():
             for t in self.timeslots:
                 self.model.addConstr(
-                    gp.quicksum(x[c, t, r] for c in g_courses for r in self.room_list)
+                    gp.quicksum(self.x[c, t, r] for c in g_courses for r in self.room_list)
                     - 1
-                    <= s_overlap[g, t],
+                    <= self.s_overlap[g, t],
                     name=f"S2_overlap_{g}_t{t}",
                 )
 
         # S3 - Global time overlap:
         for t in self.timeslots:
             self.model.addConstr(
-                gp.quicksum(x[c, t, r] for c in self.course_list for r in self.room_list)
+                gp.quicksum(self.x[c, t, r] for c in self.course_list for r in self.room_list)
                 - len(self.room_list)
-                <= s_overlap_global[t],
+                <= self.s_overlap_global[t],
                 name=f"S3_global_overlap_t{t}",
             )
 
@@ -138,7 +146,7 @@ class Instance:
             # print(f"  Total capacity penalty:  "
             #       f"{alpha * sum(s_cap[c,t,r].X for c in courses for t in timeslots for r in room_list):.2f}")
             print(f"  Total overlap penalty:   "
-                  f"{self.beta * sum(s_overlap[g, t].X for g in self.C_g.keys() for t in self.timeslots):.2f}")
+                  f"{self.beta * sum(self.s_overlap[g, t].X for g in self.C_g.keys() for t in self.timeslots):.2f}")
             # print(f"  Total workload penalty:  "
             #       f"{self.gamma * sum(s_wl[p].X for p in professors):.2f}")
             # print("-" * 65)
@@ -149,7 +157,7 @@ class Instance:
             for c in self.course_list:
                 for t in self.timeslots:
                     for r in self.room_list:
-                        if x[c, t, r].X > 0.5:
+                        if self.x[c, t, r].X > 0.5:
                             overflow = max(0, self.demand[c] - self.capacity[r])
                             flag = " !!" if overflow > 0 else ""
                             print(f"  {c:<10} {slot_label(t):<22} {r:<6} "
@@ -162,7 +170,7 @@ class Instance:
             any_overlap = False
             for g in self.C_g.keys():
                 for t in self.timeslots:
-                    val = s_overlap[g, t].X
+                    val = self.s_overlap[g, t].X
                     if val > 0.5:
                         any_overlap = True
                         print(f"  {g:<18} {slot_label(t):<22} "
@@ -195,15 +203,22 @@ class Instance:
             print(f"\nOptimization ended with status {self.model.Status}")
 
 
-    def slot_label(t, slots_per_day=5):
-        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-        day_idx = (t - 1) // slots_per_day
-        slot_idx = (t - 1) % slots_per_day + 1
-        start_hour = 8 + (slot_idx - 1) * 2  # first slot starts at 08:00
-        return f"{day_names[day_idx]} {start_hour:02d}:00-{start_hour + 2:02d}:00"
+    
 
     def get_sizes(self):
         return len(self.course_list), len(self.room_list), self.timeslots, len(self.C_p), len(self.C_g)
+    
+    
+    def df_solution(self):
+        if self.model.status==GRB.INFEASIBLE:
+            return None
+        df=[]
+        for c in self.course_list:
+            for t in self.timeslots:
+                for r in self.room_list:
+                    if self.x[c,t,r].X>0.5:
+                        df.append({'course index':c,'timeslot':t,'room':r})
+        return pd.DataFrame(df)
 
     # def export_solution(self):
     #     if self.model.Status == GRB.INFEASIBLE:
