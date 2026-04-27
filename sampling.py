@@ -3,15 +3,29 @@ import pandas as pd
 import DataIntegration
 import random
 import networkx as nx
-import matplotlib.pyplot as plt
-import math
-from collections import defaultdict
 
-#from node2vec import Node2Vec
+from collections import defaultdict
+from Instance import Instance
+
+
 
 df1=DataIntegration.groups
 df1['Course_Level']=df1['Code'].str[2:3]
+df1['Index']=df1.index
+df1['cg']=df1['Code']+'-'+df1['Group']
+df1['dl']=df1['Department']+'-'+df1['Course_Level']
+
 df2=DataIntegration.teaching_rooms
+df2['R-Index']=df2.index
+df2s=df2.sort_values(by='Capacity')
+
+
+df3=DataIntegration.timetable_by_course_code
+df3['Group']=df3['Group'].astype(str)
+df3.loc[df3['Type'] == 'LECTURE', 'Group'] = 'L'
+df3.loc[df3['Type'] == 'WORKSHOP', 'Group'] = 'W'
+
+df3['cg']=df3['Code']+'-'+df3['Group']
 
 df4=DataIntegration.staff_df
 df4=df4.reset_index(drop=True)
@@ -19,7 +33,18 @@ department_list=df1['Department'].unique().tolist()
 
 num_ts=25
 staff_list=df4['Staff'].unique().tolist()
+
+
 professor_to_index={name:i for i,name in enumerate(staff_list)}
+df4['Index']=df4['Staff'].map(professor_to_index)
+df3['P-Index']=df3['Staff'].map(professor_to_index)
+
+
+cg_to_prof=(df3[['cg','P-Index']].dropna(subset=['cg','P-Index']).drop_duplicates().groupby('cg',as_index=False).sample(n=1,random_state=111))
+
+df1=df1.merge(cg_to_prof,on='cg',how='left',validate='many_to_one')
+cg_to_prof=df1.set_index('cg')['P-Index'].to_dict()
+
 
 course_to_professor=defaultdict(set)
 professor_to_course=defaultdict(set)
@@ -41,124 +66,107 @@ def course_sampling(num_dpt=3,num_courses=50,seed=111):
     return df
 a=course_sampling()
 
-def classroom_sampling(num_rooms=10,seed=111):
-    df=df2.sample(n=num_rooms,random_state=seed)
-    return df
-b=classroom_sampling()
-
-def professor_sampling(df_course,seed=111):
-    random.seed(seed)
-    pf_list=[]
-    for i in range(len(df_course)):
-        qualified_pf=list(course_to_professor[df_course.iloc[i]['Code']])
-        nm=math.ceil(len(qualified_pf)/2)
-        qualified_pf=random.sample(qualified_pf,k=nm)
-        pf_list=pf_list+qualified_pf
-    pf_list=set(pf_list)
-    return list(pf_list)
-
-d=professor_sampling(a)
-        
+def classroom_sampling(df_course,num_rooms=10,seed=111):
+    obj=df_course['NUMSTU'].tolist()
+    smallest=min(obj)
+    largest=max(obj)
+    candidate_pool=df2[df2['Capacity']>=smallest]
+    sampled=candidate_pool.sample(num_rooms,random_state=seed)
+    if sampled['Capacity'].max()<largest:
+        sampled=sampled.drop(sampled.sample(n=1,random_state=seed+1).index)
+        big_room_pool=df2[(df2['Capacity']>=largest)]
+        new_room=big_room_pool.sample(n=1,random_state=seed+2)
+        df=pd.concat([sampled,new_room])
+        return df
+    else:
+        return sampled
+b=classroom_sampling(a)
 
 
-def generating_trash_schedule(df_course,df_classroom,ls_professor,seed=111):
+d=a['P-Index'].unique().tolist()
+
+
+def generating_trash_schedule(df_course,df_classroom,seed=111):
+    
     random.seed(seed)
 
     num_rooms=len(df_classroom)
     num_courses=len(df_course)
     ts=[random.randint(1,num_ts) for _ in range(num_courses)]
     rm=[random.randint(0,num_rooms-1) for _ in range(num_courses)]
-    course_idx=df_course.index
+    course_cg=df_course['cg'].tolist()
     room_idx=df_classroom.index
-    capacity=df2.loc[room_idx,'Capacity'].tolist()
-    
-    prfs=[]
-    cd=[]
-    dpt=[]
+    capacity=df_classroom['Capacity'].tolist()
+    prfs=df_course['P-Index'].tolist()
+    dpt=df_course['Department'].tolist()
     cpct=[]
-    nmst=[]
+    nmst=df_course['NUMSTU'].tolist()
     for i in range(num_courses):
         cpct=cpct+[capacity[rm[i]]]
         rm[i]=room_idx[rm[i]]
-        st=df1['NUMSTU'][course_idx[i]]
-        nmst=nmst+[st]
-        code=df1['Code'][course_idx[i]]
-        cd=cd+[code]
-        prfs=prfs+[random.choice(list(course_to_professor[code]&set(ls_professor)))]
-        department=df1['Department'][course_idx[i]]
-        dpt=dpt+[department]
         
-    df=pd.DataFrame({'course index':course_idx,'code':cd,'department':dpt,'timeslot':ts,'classroom index':rm,'professor index':prfs,'capacity':cpct,'numstu':nmst})
+        
+    df=pd.DataFrame({'course index':df_course.index,'code group':course_cg,'department':dpt,'timeslot':ts,'classroom index':rm,'professor':prfs,'capacity':cpct,'numstu':nmst})
     
     return df
-c=generating_trash_schedule(a,b,d)
+c=generating_trash_schedule(a,b)
 
 
+ist=Instance(a, b, 25, d)
 
 
-def schedule_to_graph(df_schedule):
-    G=nx.Graph()
-    prfs=df_schedule['professor index'].unique().tolist()
-    for i in range(len(prfs)):
-        G.add_node(f'professor{prfs[i]}', type='professor')
-    for i in range(num_ts):
-        G.add_node(f'timeslot{i+1}', type='timeslot')
-    rm=df_schedule['classroom index'].unique().tolist()
-    for i in range(len(rm)):
-        G.add_node(f'classroom{rm[i]}', type='classroom')
-    cd=df_schedule['code'].unique().tolist()
-    for i in range(len(cd)):
-        G.add_node(cd[i], type='code')
-    cpct=df_schedule['capacity'].unique().tolist()
-    for i in range(len(cpct)):
-        G.add_node(f'capacity{cpct[i]}', type='capacity')
-    nmst=df_schedule['numstu'].unique().tolist()
-    for i in range(len(nmst)):
-        G.add_node(f'numstu{nmst[i]}', type='numstu')
-    course=df_schedule['course index'].tolist()
-    dpt=df_schedule['department'].unique().tolist()
-    for i in range(len(dpt)):
-        G.add_node(dpt[i], type='department')
-    for i in range(len(course)):
-        G.add_node(f'course{course[i]}',node_type='course')
-        G.add_edge(f'course{course[i]}', f'professor{df_schedule['professor index'][i]}',relationship='is taught by')
-        G.add_edge(f'course{course[i]}', df_schedule['code'][i],relationship='has code')
-        G.add_edge(f'course{course[i]}', f'classroom{df_schedule['classroom index'][i]}', relationship='take place in')
-        G.add_edge(f'course{course[i]}', f'timeslot{df_schedule['timeslot'][i]}',relationship='during time')
-        G.add_edge(f'course{course[i]}',df_schedule['department'][i],relationship='belongs to department' )
-        G.add_edge(f'course{course[i]}',f'numstu{df_schedule['numstu'][i]}',relationship='has number of students')
-    for i in range(len(prfs)):
-        G.add_edge(f'professor{prfs[i]}',df4['Code'][prfs[i]],relationship='qualified to teach')
-    for i in range(len(rm)):
-        G.add_edge(f'classroom{rm[i]}', f'capacity{df_schedule.loc[df_schedule['classroom index']==rm[i],'capacity'].iloc[0]}', relationship='has capacity')
-    return G
-
-g=schedule_to_graph(c)
     
     
-# def aggregation(graph):
-#     node2vec=Node2Vec(graph,dimensions=64,walk_length=30,num_walks=100,workers=28)
-#     return node2vec
-# aggregation(g)  
+random.seed(457)
+seeds=random.sample(range(1,10000000), 1000)
+all_courses_sampling=[]
+all_rooms_sampling=[]
+all_professors=[]
+all_poor_schedule=[]
+for i in range(len(seeds)):
+    df_course=course_sampling(3,50,seeds[i])
+    df_room=classroom_sampling(df_course,10,seeds[i]+1)
+    prof=df_course['P-Index'].unique().tolist()
+    prof=pd.DataFrame({'sample_id':i,'P-Index':prof})
+    df_poor_schedule=generating_trash_schedule(df_course, df_room,seed=seeds[i]+2)
     
+    df_course['sample_id']=i
+    df_room['sample_id']=i
+    df_poor_schedule['sample_id']=i
     
-def feed_gurobi(df_course,df_classroom,ls_professor):
-    courses=df_course.index
-    professors={}
-    for i in range(len(ls_professor)):
-        professors[ls_professor[i]]=list(professor_to_course[ls_professor[i]])
-    rooms={}
-    for i in range(len(df_classroom)):
-        rooms[df_classroom.iloc[i]['Host Key']]=df_classroom.iloc[i]['Capacity']
-    demand={}
-    for i in range(len(df_course)):
-        demand[df_course.iloc[i]['Code']]=df_course.iloc[i]['NUMSTU']
-    programs={department_level:list(index) for department_level,index in df_course.groupby(['Department','Course_Level']).groups.items()}
-    return courses,professors,rooms,demand,programs
-e=feed_gurobi(a, b, d)
+    all_courses_sampling.append(df_course)
+    all_rooms_sampling.append(df_room)
+    all_professors.append(prof)
+    all_poor_schedule.append(df_poor_schedule)
     
+df_all_courses=pd.concat(all_courses_sampling,ignore_index=True)
+df_all_rooms=pd.concat(all_rooms_sampling,ignore_index=True)
+df_all_professors=pd.concat(all_professors,ignore_index=True)
+df_all_poor_schedule=pd.concat(all_poor_schedule,ignore_index=True)
 
-        
+    
+    
+df_all_courses.to_csv('courses_sampling.csv',index=False)
+df_all_rooms.to_csv('rooms_sampling.csv',index=False)
+df_all_professors.to_csv('professors_sampling.csv',index=False)
+df_all_poor_schedule.to_csv('poor_schedule_generating.csv',index=False)
+    
+    
+    
+#%%
+all_opt_solution=[]
+for i in range(len(seeds)):
+    ist=Instance(all_courses_sampling[i], all_rooms_sampling[i],25,all_professors[i]['P-Index'].tolist())
+    ist.generate_Gurobi_model()
+    ist.solve_Gurobi()
+    df=ist.df_solution()
+    if df is not None:
+        df['sample_id']=i
+        all_opt_solution.append(df)
+df_all_opt_solution=pd.concat(all_opt_solution,ignore_index=True)
+df_all_opt_solution.to_csv('optimized_schedule.csv',index=False)
+
+    
     
     
     
