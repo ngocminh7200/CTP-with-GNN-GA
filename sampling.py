@@ -6,8 +6,8 @@ import networkx as nx
 
 from collections import defaultdict
 from Instance import Instance
-
-
+from Graph import Graph
+#from node2vec import Node2Vec
 
 df1=DataIntegration.groups
 df1['Course_Level']=df1['Code'].str[2:3]
@@ -82,7 +82,18 @@ def classroom_sampling(df_course,num_rooms=10,seed=111):
         return sampled
 b=classroom_sampling(a)
 
+# def professor_sampling(df_course,seed=111):
+#     random.seed(seed)
+#     pf_list=[]
+#     for i in range(len(df_course)):
+#         qualified_pf=list(course_to_professor[df_course.iloc[i]['Code']])
+#         nm=math.ceil(len(qualified_pf)/2)
+#         qualified_pf=random.sample(qualified_pf,k=nm)
+#         pf_list=pf_list+qualified_pf
+#     pf_list=set(pf_list)
+#     return list(pf_list)
 
+# d=professor_sampling(a)
 d=a['P-Index'].unique().tolist()
 
 
@@ -98,7 +109,7 @@ def generating_trash_schedule(df_course,df_classroom,seed=111):
     room_idx=df_classroom.index
     capacity=df_classroom['Capacity'].tolist()
     prfs=df_course['P-Index'].tolist()
-    dpt=df_course['Department'].tolist()
+    dl=df_course['dl'].tolist()
     cpct=[]
     nmst=df_course['NUMSTU'].tolist()
     for i in range(num_courses):
@@ -106,16 +117,23 @@ def generating_trash_schedule(df_course,df_classroom,seed=111):
         rm[i]=room_idx[rm[i]]
         
         
-    df=pd.DataFrame({'course index':df_course.index,'code group':course_cg,'department':dpt,'timeslot':ts,'classroom index':rm,'professor':prfs,'capacity':cpct,'numstu':nmst})
+    df=pd.DataFrame({'course index':df_course.index,'code group':course_cg,'dl':dl,'timeslot':ts,'classroom index':rm,'professor':prfs,'capacity':cpct,'numstu':nmst})
     
     return df
 c=generating_trash_schedule(a,b)
 
-
-ist=Instance(a, b, 25, d)
 #%%
 
-    
+
+
+ist=Instance(a, b, 25, d)
+gr=Graph(ist,c)
+gr._check_constraints()
+gr._build_features()
+
+
+
+#%%
     
 random.seed(457)
 seeds=random.sample(range(1,10000000), 1000)
@@ -168,7 +186,7 @@ df_all_opt_solution.to_csv('optimized_schedule.csv',index=False)
 
     
     
-    
+
     
     
     
