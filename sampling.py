@@ -113,7 +113,7 @@ c=generating_trash_schedule(a,b)
 
 
 ist=Instance(a, b, 25, d)
-
+#%%
 
     
     
