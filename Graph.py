@@ -1,6 +1,7 @@
 import networkx as nx
 import numpy as np
 from Instance import Instance
+import pandas as pd
 
 class Graph:
 
@@ -18,33 +19,27 @@ class Graph:
 
         # --- H2: Professor conflict ---
         # prof_ts[p, t] = number of courses professor p teaches at timeslot t
-        self.prof_ts = np.zeros((P, T), dtype=np.int32)
-        for c in range(C):
-            p = int(ds.course_professor[c])
-            t = int(sc.assigned_timeslot[c])
-            self.prof_ts[p, t] += 1
+
+        self.prof_ts=pd.crosstab(sc['professor'],sc['timeslot'])
+
 
         # Per-course: does this course cause a professor conflict?
         self.h2_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            p = int(ds.course_professor[c])
-            t = int(sc.assigned_timeslot[c])
-            if self.prof_ts[p, t] > 1:
-                self.h2_course[c] = 1.0
+            prf=sc.iloc[c]['professor']
+            ts=sc.iloc[c]['timeslot']
+            if self.prof_ts[ts][prf]>1:
+                self.h2_course[c]=1
 
         # --- H3: Room conflict ---
         # room_ts[r, t] = number of courses assigned to room r at timeslot t
-        self.room_ts = np.zeros((R, T), dtype=np.int32)
-        for c in range(C):
-            r = int(sc.assigned_room[c])
-            t = int(sc.assigned_timeslot[c])
-            self.room_ts[r, t] += 1
+        self.room_ts=pd.crosstab(sc['classroom index'], sc['timeslot'])
 
         self.h3_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            r = int(sc.assigned_room[c])
-            t = int(sc.assigned_timeslot[c])
-            if self.room_ts[r, t] > 1:
+            rm=sc.iloc[c]['classroom index']
+            ts=sc.iloc[c]['timeslot']
+            if self.room_ts[ts][rm] > 1:
                 self.h3_course[c] = 1.0
 
         # --- H4: Room capacity ---
@@ -52,8 +47,7 @@ class Graph:
         self.h4_course = np.zeros(C, dtype=np.float32)
         self.h4_overflow = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            r = int(sc.assigned_room[c])
-            overflow = ds.enrollment[c] - ds.room_capacity[r]
+            overflow = sc.iloc[c]['numstu'] -sc.iloc[c]['capacity']
             if overflow > 0:
                 self.h4_course[c] = 1.0
                 self.h4_overflow[c] = overflow
@@ -63,9 +57,7 @@ class Graph:
 
         # --- S1: Global timeslot crowding ---
         # courses_at_t[t] = total courses at timeslot t
-        self.courses_at_t = np.zeros(T, dtype=np.float32)
-        for c in range(C):
-            self.courses_at_t[int(sc.assigned_timeslot[c])] += 1.0
+        self.courses_at_t=sc.groupby('timeslot').size()
 
         # s^time_t = max(0, courses_at_t - |R|)
         self.s1_excess = np.maximum(0.0, self.courses_at_t - R)
@@ -74,11 +66,7 @@ class Graph:
 
         # --- S2: Program overlap ---
         # prog_ts[g, t] = courses from program g at timeslot t
-        self.prog_ts = np.zeros((G, T), dtype=np.int32)
-        for g in range(G):
-            for c in ds.prog_courses[g]:
-                t = int(sc.assigned_timeslot[c])
-                self.prog_ts[g, t] += 1
+        self.prog_ts=pd.crosstab(sc['dl'], sc['timeslot'])
 
         # s^overlap_{g,t} = max(0, prog_ts - 1)
         self.s2_overlap = np.maximum(0, self.prog_ts - 1).astype(np.float32)
@@ -102,42 +90,25 @@ class Graph:
         """
         #TODO: remove [4], [6], adjust [8] (cuz for us, a course only belong to 1 prog)
         ds, sc = self.ds, self.sched
-        C = ds.num_courses
+        C = len(ds.course_list)
 
-        enrollment_norm = ds.enrollment / (ds.enrollment.max() + 1e-8)
 
-        room_fit = np.zeros(C, dtype=np.float32)
-        for c in range(C):
-            r = int(sc.assigned_room[c])
-            room_fit[c] = ds.room_capacity[r] / (ds.enrollment[c] + 1e-8)
+        room_fit=(sc['capacity']/sc['numstu']).to_numpy()
         room_fit = np.clip(room_fit, 0.0, 3.0)
 
-        flexibility = np.array([len(ds.eligible_rooms[c]) / ds.num_rooms
+        flexibility = np.array([(ds.rooms['Capacity']>=ds.courses.iloc[c]['NUMSTU']).mean()
                                 for c in range(C)], dtype=np.float32)
 
-        prog_counts = np.array([len(ds.course_programs[c]) for c in range(C)], dtype=np.float32)
-        prog_counts_norm = prog_counts / (prog_counts.max() + 1e-8)
-
-        # S2 exposure: how much overlap does this course contribute to?
-        s2_exposure = np.zeros(C, dtype=np.float32)
-        for c in range(C):
-            t = int(sc.assigned_timeslot[c])
-            for g in ds.course_programs[c]:
-                s2_exposure[c] += self.s2_overlap[g, t]
-        max_exp = max(s2_exposure.max(), 1.0)
-        s2_exposure /= max_exp
 
         return np.stack([
             self.h2_course,  # [0]
             self.h3_course,  # [1]
             self.h4_course,  # [2]
             self.h4_overflow_norm,  # [3]
-            enrollment_norm,  # [4]
             room_fit,  # [5]
             flexibility,  # [6]
-            prog_counts_norm,  # [7]
-            s2_exposure,  # [8]
         ], axis=1).astype(np.float32)
+# above has been fixed
 
     def _build_professor_features(self) -> np.ndarray:
         """Professor node features (P, 4).
@@ -150,25 +121,26 @@ class Graph:
         [3] teaching_density     — actual slots used / T (how spread out)
         """
         #TODO: question about [1], remove [2]
-        ds = self.ds
-        P, T = ds.num_professors, ds.num_timeslots
+        # remove[1], what is this?
+        ds, sc = self.ds, self.sched
+        T = len(ds.timeslots)
 
         conflicts = (self.prof_ts > 1).astype(np.float32)
-        h2_any = (conflicts.sum(axis=1) > 0).astype(np.float32)
-        h2_ratio = conflicts.sum(axis=1) / (T + 1e-8)
+        h2_any = (conflicts.sum(axis=1).to_numpy() > 0).astype(np.float32)
 
-        course_counts = np.array([len(ds.prof_courses[p]) for p in range(P)], dtype=np.float32)
-        course_counts_norm = course_counts / (course_counts.max() + 1e-8)
+        course_counts = np.array([len(ds.C_p[p]) for p in ds.professors], dtype=np.float32)
 
-        active_slots = (self.prof_ts > 0).astype(np.float32).sum(axis=1)
-        teaching_density = active_slots / (T + 1e-8)
+
+        active_slots = (self.prof_ts > 0).astype(np.float32).sum(axis=1).to_numpy()
+        teaching_density=active_slots/T
 
         return np.stack([
             h2_any,  # [0]
-            h2_ratio,  # [1]
-            course_counts_norm,  # [2]
+            course_counts,  # [2]??
             teaching_density,  # [3]
         ], axis=1).astype(np.float32)
+    
+# above fixed
 
     def _build_room_features(self) -> np.ndarray:
         """Room node features (R, 5).
@@ -182,34 +154,20 @@ class Graph:
         [4] avg_overflow_norm    — average capacity overflow for assigned courses
         """
         #TODO: remove [3]
+        # remove [4] as well. goodbye~
         ds = self.ds
-        R, T, C = ds.num_rooms, ds.num_timeslots, ds.num_courses
+        R, T, C = len(ds.rooms), len(ds.timeslots), len(ds.courses)
 
         conflicts = (self.room_ts > 1).astype(np.float32)
-        h3_any = (conflicts.sum(axis=1) > 0).astype(np.float32)
-        h3_ratio = conflicts.sum(axis=1) / (T + 1e-8)
+        h3_any = (conflicts.sum(axis=1).to_numpy() > 0).astype(np.float32)
+        h3_ratio = conflicts.sum(axis=1)/T
 
-        occupancy = (self.room_ts > 0).astype(np.float32).sum(axis=1) / T
-        cap_norm = ds.room_capacity / (ds.room_capacity.max() + 1e-8)
-
-        # Average overflow for courses assigned to each room
-        room_overflows = defaultdict(list)
-        for c in range(C):
-            r = int(self.sched.assigned_room[c])
-            ov = max(0.0, ds.enrollment[c] - ds.room_capacity[r])
-            room_overflows[r].append(ov)
-        max_enrollment = ds.enrollment.max()
-        avg_overflow = np.zeros(R, dtype=np.float32)
-        for r in range(R):
-            if room_overflows[r]:
-                avg_overflow[r] = np.mean(room_overflows[r]) / (max_enrollment + 1e-8)
+        occupancy = (self.room_ts > 0).astype(np.float32).sum(axis=1).to_numpy()/T
 
         return np.stack([
             h3_any,  # [0]
             h3_ratio,  # [1]
             occupancy,  # [2]
-            cap_norm,  # [3]
-            avg_overflow,  # [4]
         ], axis=1).astype(np.float32)
 
     def _build_timeslot_features(self) -> np.ndarray:
@@ -225,9 +183,10 @@ class Graph:
         [5] slot_in_day_norm         — position within the day (0–1)
         """
 
-        ds = self.ds
-        T, P, R, C = ds.num_timeslots, ds.num_professors, ds.num_rooms, ds.num_courses
-        G = ds.num_programs
+        ds=self.ds
+        sc=self.sched
+        T, P, R, C = len(ds.timeslots), len(ds.professors), len(ds.rooms), len(ds.courses)
+        G = sc['dl'].unique().tolist()
 
         h2_prof = (self.prof_ts > 1).astype(np.float32).sum(axis=0) / (P + 1e-8)
         h3_room = (self.room_ts > 1).astype(np.float32).sum(axis=0) / (R + 1e-8)
