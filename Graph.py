@@ -59,10 +59,6 @@ class Graph:
         # courses_at_t[t] = total courses at timeslot t
         self.courses_at_t=sc.groupby('timeslot').size()
 
-        # s^time_t = max(0, courses_at_t - |R|)
-        self.s1_excess = np.maximum(0.0, self.courses_at_t - R)
-        max_s1 = max(self.s1_excess.max(), 1.0)
-        self.s1_norm = self.s1_excess / max_s1
 
         # --- S2: Program overlap ---
         # prog_ts[g, t] = courses from program g at timeslot t
@@ -122,7 +118,7 @@ class Graph:
         """
         #TODO: question about [1], remove [2]
         # remove[1], what is this?
-        ds, sc = self.ds, self.sched
+        ds = self.ds
         T = len(ds.timeslots)
 
         conflicts = (self.prof_ts > 1).astype(np.float32)
@@ -156,7 +152,7 @@ class Graph:
         #TODO: remove [3]
         # remove [4] as well. goodbye~
         ds = self.ds
-        R, T, C = len(ds.rooms), len(ds.timeslots), len(ds.courses)
+        T = len(ds.timeslots)
 
         conflicts = (self.room_ts > 1).astype(np.float32)
         h3_any = (conflicts.sum(axis=1).to_numpy() > 0).astype(np.float32)
@@ -182,30 +178,27 @@ class Graph:
         [4] day_index_norm           — which day (0–1)
         [5] slot_in_day_norm         — position within the day (0–1)
         """
+        #TODO: 
+            # removed [4] and [5], [2] as well
 
         ds=self.ds
         sc=self.sched
-        T, P, R, C = len(ds.timeslots), len(ds.professors), len(ds.rooms), len(ds.courses)
-        G = sc['dl'].unique().tolist()
+        P,R,C=len(ds.professors),len(ds.rooms),len(ds.courses)
 
-        h2_prof = (self.prof_ts > 1).astype(np.float32).sum(axis=0) / (P + 1e-8)
-        h3_room = (self.room_ts > 1).astype(np.float32).sum(axis=0) / (R + 1e-8)
 
-        load_ratio = self.courses_at_t / (C + 1e-8)
+        h2_prof = (self.prof_ts > 1).astype(np.float32).sum(axis=0).to_numpy()/P
+        h3_room = (self.room_ts > 1).astype(np.float32).sum(axis=0).to_numpy()/R
 
-        day_idx = np.array([t // ds.slots_per_day for t in range(T)], dtype=np.float32)
-        day_norm = day_idx / (ds.num_days + 1e-8)
-        slot_in_day = np.array([t % ds.slots_per_day for t in range(T)], dtype=np.float32)
-        slot_norm = slot_in_day / (ds.slots_per_day + 1e-8)
+        load_ratio = sc['timeslot'].value_counts().sort_index().to_numpy()/C
+
 
         return np.stack([
             h2_prof,  # [0]
             h3_room,  # [1]
-            self.s1_norm,  # [2]
             load_ratio,  # [3]
-            day_norm,  # [4]
-            slot_norm,  # [5]
+
         ], axis=1).astype(np.float32)
+# above fixed
 
     def _build_program_features(self) -> np.ndarray:
         """Program node features (G, 4).
@@ -219,10 +212,11 @@ class Graph:
         """
 
         #TODO: remove [3], add [4] number of courses in this program
-        ds = self.ds
-        G = ds.num_programs
+        ds=self.ds
+        sc=self.sched
+        G=sc['dl'].unique().tolist()
 
-        total = self.s2_overlap.sum(axis=1)
+        total = self.s2_overlap.sum(axis=1).to_numpy()
         max_total = max(total.max(), 1.0)
         total_norm = total / max_total
 
@@ -230,10 +224,10 @@ class Graph:
 
         worst = self.s2_overlap.max(axis=1)
         max_worst = max(worst.max(), 1.0)
-        worst_norm = worst / max_worst
+        worst_norm = (worst/max_worst).to_numpy()
 
-        counts = np.array([len(ds.prog_courses[g]) for g in range(G)], dtype=np.float32)
-        counts_norm = counts / (counts.max() + 1e-8)
+        counts = np.array([len(ds.C_g[g]) for g in G], dtype=np.float32)
+        counts_norm = counts/counts.max()
 
         return np.stack([
             total_norm,  # [0]
@@ -245,7 +239,8 @@ class Graph:
     def _build_features(self):
         """Compute and store all node features."""
         ds = self.ds
-
+        C, R, T, P, G = self.ds.get_sizes()
+        
         course_feats = self._build_course_features()
         prof_feats = self._build_professor_features()
         room_feats = self._build_room_features()
@@ -253,15 +248,15 @@ class Graph:
         prog_feats = self._build_program_features()
 
         # Store individually
-        for c in range(ds.num_courses):
+        for c in range(C):
             self._features[('course', c)] = course_feats[c]
-        for p in range(ds.num_professors):
+        for p in range(P):
             self._features[('professor', p)] = prof_feats[p]
-        for r in range(ds.num_rooms):
+        for r in range(R):
             self._features[('room', r)] = room_feats[r]
-        for t in range(ds.num_timeslots):
+        for t in range(T):
             self._features[('timeslot', t)] = ts_feats[t]
-        for g in range(ds.num_programs):
+        for g in range(G):
             self._features[('program', g)] = prog_feats[g]
 
         # Also cache the matrices for fast retrieval
@@ -278,3 +273,4 @@ class Graph:
 
     def printGraph(self):
         print(self.G)
+
