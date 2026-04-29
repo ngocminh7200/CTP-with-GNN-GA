@@ -7,6 +7,7 @@ import networkx as nx
 from collections import defaultdict
 from Instance import Instance
 from Graph import Graph
+from Graph import HeteroGraphSAGE
 #from node2vec import Node2Vec
 
 df1=DataIntegration.groups
@@ -128,8 +129,8 @@ c=generating_trash_schedule(a,b)
 
 ist=Instance(a, b, 25, d)
 gr=Graph(ist,c)
-gr._check_constraints()
-gr._build_features()
+gr.build_model()
+gr.out
 
 
 
