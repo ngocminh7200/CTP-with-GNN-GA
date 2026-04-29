@@ -2,6 +2,13 @@ import networkx as nx
 import numpy as np
 from Instance import Instance
 import pandas as pd
+import torch
+from torch_geometric.data import HeteroData
+import torch_geometric.transforms as T
+import torch.nn.functional as F
+from torch import nn
+from torch_geometric.nn import HeteroConv,SAGEConv,Linear
+
 
 class Graph:
 
@@ -236,41 +243,103 @@ class Graph:
             counts_norm,  # [3]
         ], axis=1).astype(np.float32)
 
-    def _build_features(self):
-        """Compute and store all node features."""
-        ds = self.ds
-        C, R, T, P, G = self.ds.get_sizes()
+
         
-        course_feats = self._build_course_features()
-        prof_feats = self._build_professor_features()
-        room_feats = self._build_room_features()
-        ts_feats = self._build_timeslot_features()
-        prog_feats = self._build_program_features()
+    def build_graph(self):
+        self._check_constraints()
+        self.data=HeteroData()
+        
+        course_to_idx={course:i for i, course in enumerate(self.ds.course_list)}
+        prof_to_idx={prof:i for i,prof in enumerate(self.ds.professors)}
+        room_to_idx={room:i for i,room in enumerate(self.ds.rooms['R-Index'].tolist())}
+        program_to_idx={program:i for i, program in enumerate(self.sched['dl'].unique().tolist())}
+        timeslot_to_idx={timeslot:i for i, timeslot in enumerate(list(self.ds.timeslots))}
+        
+        course_features=self._build_course_features()
+        professor_features=self._build_professor_features()
+        room_features=self._build_room_features()
+        program_features=self._build_program_features()
+        timeslot_features=self._build_timeslot_features()
+        
+        self.data['course'].x=torch.tensor(course_features,dtype=torch.float)
+        self.data['professor'].x=torch.tensor(professor_features,dtype=torch.float)
+        self.data['room'].x=torch.tensor(room_features,dtype=torch.float)
+        self.data['program'].x=torch.tensor(program_features,dtype=torch.float)
+        self.data['timeslot'].x=torch.tensor(timeslot_features,dtype=torch.float)
+        
+        course_professor=list(self.sched[['course index','professor']].itertuples(index=False,name=None))
+        course_room=list(self.sched[['course index','classroom index']].itertuples(index=False,name=None))
+        course_timeslot=list(self.sched[['course index','timeslot']].itertuples(index=False,name=None))
+        course_program=list(self.sched[['course index','dl']].itertuples(index=False,name=None))
+        
+        self.data['course','taught_by','professor'].edge_index=make_edge_index(course_professor, course_to_idx, prof_to_idx)
+        self.data['course','take_place_in','room'].edge_index=make_edge_index(course_room, course_to_idx, room_to_idx)
+        self.data['course','belong_to','program'].edge_index=make_edge_index(course_program, course_to_idx, program_to_idx)
+        self.data['course','when','timeslot'].edge_index=make_edge_index(course_timeslot, course_to_idx, timeslot_to_idx)
+        
+        self.data=T.ToUndirected()(self.data)
+    
+    # def build_model(self):
+    #     self.build_graph()
+    #     self.model=HeteroGraphSAGE(64, 32, self.data.metadata())
+    #     self.out=self.model(self.data.x_dict,self.data.edge_index_dict)
+        
 
-        # Store individually
-        for c in range(C):
-            self._features[('course', c)] = course_feats[c]
-        for p in range(P):
-            self._features[('professor', p)] = prof_feats[p]
-        for r in range(R):
-            self._features[('room', r)] = room_feats[r]
-        for t in range(T):
-            self._features[('timeslot', t)] = ts_feats[t]
-        for g in range(G):
-            self._features[('program', g)] = prog_feats[g]
 
-        # Also cache the matrices for fast retrieval
-        self._feat_matrices = {
-            'course': course_feats,
-            'professor': prof_feats,
-            'room': room_feats,
-            'timeslot': ts_feats,
-            'program': prog_feats,
-        }
+def make_edge_index(edge_pairs,source,destination):
+    src=[]
+    dst=[]
+    for src_id,dst_id in edge_pairs:
+        src_idx=source[src_id]
+        dst_idx=destination[dst_id]
+        src.append(src_idx)
+        dst.append(dst_idx)
+    edge_index=torch.tensor([src,dst],dtype=torch.long)
+    return edge_index
+        
+        
 
-    def addEdge(self, u, v):
-        self.G.add_edge(u, v)
+#%%
 
-    def printGraph(self):
-        print(self.G)
+# class HeteroGraphSAGE(nn.Module):
+#     def __init__(self, hidden_channels, out_channels, metadata):
+#         super().__init__()
 
+#         node_types, edge_types = metadata
+
+#         self.convs = nn.ModuleList()
+
+#         for _ in range(2):
+#             conv = HeteroConv(
+#                 {
+#                     edge_type: SAGEConv((-1, -1), hidden_channels)
+#                     for edge_type in edge_types
+#                 },
+#                 aggr="sum",
+#             )
+#             self.convs.append(conv)
+
+#         self.lin = nn.ModuleDict({
+#             node_type: Linear(hidden_channels, out_channels)
+#             for node_type in node_types
+#         })
+
+#     def forward(self, x_dict, edge_index_dict):
+#         for conv in self.convs:
+#             x_dict = conv(x_dict, edge_index_dict)
+#             x_dict = {
+#                 node_type: F.relu(x)
+#                 for node_type, x in x_dict.items()
+#             }
+
+#         out_dict = {
+#             node_type: self.lin[node_type](x)
+#             for node_type, x in x_dict.items()
+#         }
+
+#         return out_dict
+        
+        
+        
+        
+        
