@@ -27,7 +27,8 @@ class Graph:
         # --- H2: Professor conflict ---
         # prof_ts[p, t] = number of courses professor p teaches at timeslot t
 
-        self.prof_ts=pd.crosstab(sc['professor'],sc['timeslot'])
+        self.prof_ts = pd.crosstab(sc['professor'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
+
 
 
         # Per-course: does this course cause a professor conflict?
@@ -40,7 +41,7 @@ class Graph:
 
         # --- H3: Room conflict ---
         # room_ts[r, t] = number of courses assigned to room r at timeslot t
-        self.room_ts=pd.crosstab(sc['classroom index'], sc['timeslot'])
+        self.room_ts=pd.crosstab(sc['classroom index'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
 
         self.h3_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
@@ -69,7 +70,7 @@ class Graph:
 
         # --- S2: Program overlap ---
         # prog_ts[g, t] = courses from program g at timeslot t
-        self.prog_ts=pd.crosstab(sc['dl'], sc['timeslot'])
+        self.prog_ts=pd.crosstab(sc['dl'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
 
         # s^overlap_{g,t} = max(0, prog_ts - 1)
         self.s2_overlap = np.maximum(0, self.prog_ts - 1).astype(np.float32)
@@ -196,7 +197,7 @@ class Graph:
         h2_prof = (self.prof_ts > 1).astype(np.float32).sum(axis=0).to_numpy()/P
         h3_room = (self.room_ts > 1).astype(np.float32).sum(axis=0).to_numpy()/R
 
-        load_ratio = sc['timeslot'].value_counts().sort_index().to_numpy()/C
+        load_ratio = sc['timeslot'].astype(int).value_counts().reindex(range(1, 26), fill_value=0).sort_index().to_numpy()/ C
 
 
         return np.stack([
@@ -244,7 +245,6 @@ class Graph:
         ], axis=1).astype(np.float32)
 
 
-        
     def build_graph(self):
         self._check_constraints()
         self.data=HeteroData()
@@ -254,12 +254,14 @@ class Graph:
         room_to_idx={room:i for i,room in enumerate(self.ds.rooms['R-Index'].tolist())}
         program_to_idx={program:i for i, program in enumerate(self.sched['dl'].unique().tolist())}
         timeslot_to_idx={timeslot:i for i, timeslot in enumerate(list(self.ds.timeslots))}
+
         
         course_features=self._build_course_features()
         professor_features=self._build_professor_features()
         room_features=self._build_room_features()
         program_features=self._build_program_features()
         timeslot_features=self._build_timeslot_features()
+        print(timeslot_features)
         
         self.data['course'].x=torch.tensor(course_features,dtype=torch.float)
         self.data['professor'].x=torch.tensor(professor_features,dtype=torch.float)
@@ -279,10 +281,10 @@ class Graph:
         
         self.data=T.ToUndirected()(self.data)
     
-    # def build_model(self):
-    #     self.build_graph()
-    #     self.model=HeteroGraphSAGE(64, 32, self.data.metadata())
-    #     self.out=self.model(self.data.x_dict,self.data.edge_index_dict)
+    def build_model(self):
+        self.build_graph()
+        self.model=HeteroGraphSAGE(64, 32, self.data.metadata())
+        self.out=self.model(self.data.x_dict,self.data.edge_index_dict)
         
 
 
@@ -301,44 +303,43 @@ def make_edge_index(edge_pairs,source,destination):
 
 #%%
 
-# class HeteroGraphSAGE(nn.Module):
-#     def __init__(self, hidden_channels, out_channels, metadata):
-#         super().__init__()
+class HeteroGraphSAGE(nn.Module):
+    def __init__(self, hidden_channels, out_channels, metadata):
+        super().__init__()
 
-#         node_types, edge_types = metadata
+        node_types, edge_types = metadata
 
-#         self.convs = nn.ModuleList()
+        self.convs = nn.ModuleList()
 
-#         for _ in range(2):
-#             conv = HeteroConv(
-#                 {
-#                     edge_type: SAGEConv((-1, -1), hidden_channels)
-#                     for edge_type in edge_types
-#                 },
-#                 aggr="sum",
-#             )
-#             self.convs.append(conv)
+        for _ in range(2):
+            conv = HeteroConv(
+                {
+                    edge_type: SAGEConv((-1, -1), hidden_channels)
+                    for edge_type in edge_types
+                },
+                aggr="sum",
+            )
+            self.convs.append(conv)
 
-#         self.lin = nn.ModuleDict({
-#             node_type: Linear(hidden_channels, out_channels)
-#             for node_type in node_types
-#         })
+        self.lin = nn.ModuleDict({
+            node_type: Linear(hidden_channels, out_channels)
+            for node_type in node_types
+        })
 
-#     def forward(self, x_dict, edge_index_dict):
-#         for conv in self.convs:
-#             x_dict = conv(x_dict, edge_index_dict)
-#             x_dict = {
-#                 node_type: F.relu(x)
-#                 for node_type, x in x_dict.items()
-#             }
+    def forward(self, x_dict, edge_index_dict):
+        for conv in self.convs:
+            x_dict = conv(x_dict, edge_index_dict)
+            x_dict = {
+                node_type: F.relu(x)
+                for node_type, x in x_dict.items()
+            }
 
-#         out_dict = {
-#             node_type: self.lin[node_type](x)
-#             for node_type, x in x_dict.items()
-#         }
+        out_dict = {
+            node_type: self.lin[node_type](x)
+            for node_type, x in x_dict.items()
+        }
 
-#         return out_dict
-        
+        return out_dict
         
         
         
