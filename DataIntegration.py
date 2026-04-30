@@ -20,8 +20,15 @@ course_master_data = timetable_by_course_code[['Code', 'Type', 'Group', 'Departm
 course_master_data['Group'] = course_master_data['Group'].astype(str)
 course_master_data.loc[course_master_data['Type'] == 'LECTURE', 'Group'] = 'L'
 course_master_data.loc[course_master_data['Type'] == 'WORKSHOP', 'Group'] = 'W'
-course_master_data = pd.merge(course_master_data, groups[['Code', 'Group', 'NUMSTU']], on=['Code', 'Group'])
+course_master_data = pd.merge(course_master_data, groups[['Code', 'Group', 'NUMSTU']].copy(), on=['Code', 'Group'])
+course_master_data['Department'] = course_master_data['Department Name'].str[:4]
 course_master_data['Course_Level'] = course_master_data['Code'].str[2:3]
+course_master_data['Program'] = course_master_data['Department'] + course_master_data['Course_Level']
+
+course_df = course_master_data[['Code', 'Type', 'Group', 'Department Name', 'Module', 'Description', 'Duration', 'AT', 'Staff', 'NUMSTU', 'Department', 'Course_Level', 'Program']].copy()
+course_df = course_df[course_df['AT'] == True]
+course_df['Key'] = course_df['Code'] + '_' + course_df['Group']
+course_df = course_df.drop_duplicates()
 
 staff_df = course_master_data[['Staff', 'Code']].copy()
 
