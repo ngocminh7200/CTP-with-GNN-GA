@@ -24,9 +24,30 @@ course_master_data = pd.merge(course_master_data, groups[['Code', 'Group', 'NUMS
 course_master_data['Department'] = course_master_data['Department Name'].str[:4]
 course_master_data['Course_Level'] = course_master_data['Code'].str[2:3]
 course_master_data['Program'] = course_master_data['Department'] + course_master_data['Course_Level']
+course_master_data = course_master_data[course_master_data['Duration'] != '0 days 00:15:00' & ~course_master_data['Course_Level'].isin(['D', 'E'])]
+course_master_data = course_master_data[~course_master_data['Course_Level'].isin(['D', 'E'])]
 
-course_df = course_master_data[['Code', 'Type', 'Group', 'Department Name', 'Module', 'Description', 'Duration', 'AT', 'Staff', 'NUMSTU', 'Department', 'Course_Level', 'Program']].copy()
-course_df = course_df[course_df['AT'] == True]
+def sort_key(x):
+    try:
+        return (0, float(x), '')
+    except ValueError:
+        return (1, 0, x)
+
+def sort_and_combine(series):
+    all_values = []
+    for val in series:
+        if not isinstance(val, str) or val.strip() == 'nan' or val.strip() == '':
+            continue
+        all_values.extend([v.strip() for v in val.split(',')])
+
+    unique_vals = sorted(set(all_values), key=sort_key)
+    return ', '.join(unique_vals) if all_values else ''
+
+course_master_data['AT Weeks'] = course_master_data.groupby(['Code', 'Type', 'Group'], as_index=False)['AT Weeks'].transform(sort_and_combine)
+course_master_data['WT Weeks'] = course_master_data.groupby(['Code', 'Type', 'Group'], as_index=False)['WT Weeks'].transform(sort_and_combine)
+
+course_df = course_master_data[['Code', 'Type', 'Group', 'Department Name', 'Module', 'Description', 'Duration', 'AT Weeks', 'Staff', 'NUMSTU', 'Department', 'Course_Level', 'Program', 'Sample']].copy()
+course_df = course_df[course_df['Sample'] == True]
 course_df['Key'] = course_df['Code'] + '_' + course_df['Group']
 course_df = course_df.drop_duplicates()
 
