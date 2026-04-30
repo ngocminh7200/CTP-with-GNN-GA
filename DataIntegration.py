@@ -24,7 +24,7 @@ course_master_data = pd.merge(course_master_data, groups[['Code', 'Group', 'NUMS
 course_master_data['Department'] = course_master_data['Department Name'].str[:4]
 course_master_data['Course_Level'] = course_master_data['Code'].str[2:3]
 course_master_data['Program'] = course_master_data['Department'] + course_master_data['Course_Level']
-course_master_data = course_master_data[course_master_data['Duration'] != '0 days 00:15:00' & ~course_master_data['Course_Level'].isin(['D', 'E'])]
+course_master_data = course_master_data[course_master_data['Duration'] != '0 days 00:15:00']
 course_master_data = course_master_data[~course_master_data['Course_Level'].isin(['D', 'E'])]
 
 def sort_key(x):
@@ -45,6 +45,8 @@ def sort_and_combine(series):
 
 course_master_data['AT Weeks'] = course_master_data.groupby(['Code', 'Type', 'Group'], as_index=False)['AT Weeks'].transform(sort_and_combine)
 course_master_data['WT Weeks'] = course_master_data.groupby(['Code', 'Type', 'Group'], as_index=False)['WT Weeks'].transform(sort_and_combine)
+
+course_master_data['Sample'] = course_master_data['AT Weeks'].isin(['1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11', '2, 3, 4, 5, 6, 7, 8, 9, 10, 11', '1, 2, 3, 4, 5, 6, 7, 8, 9, 10', '1, 2, 3, 4, 5, 7, 8, 9, 10, 11', '2, 3, 4, 5, 7, 8, 9, 10, 11', '1, 2, 3, 4, 6, 7, 8, 9, 10, 11'])
 
 course_df = course_master_data[['Code', 'Type', 'Group', 'Department Name', 'Module', 'Description', 'Duration', 'AT Weeks', 'Staff', 'NUMSTU', 'Department', 'Course_Level', 'Program', 'Sample']].copy()
 course_df = course_df[course_df['Sample'] == True]

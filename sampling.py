@@ -2,17 +2,17 @@ import pandas as pd
 import DataIntegration
 import random
 
-from collections import defaultdict
 from Instance import Instance
 
-def course_sampling(num_dpt=3,num_courses=50,seed=111):
+def course_sampling(num_dpt=4, num_courses=50,seed=111):
     random.seed(seed)
     dpt=random.sample(department_list,k=num_dpt)
     df=df_groups[df_groups['Department'].isin(dpt)]
-    df=df.sample(n=num_courses,random_state=seed)
+    courses=random.sample(df['Code'].unique().tolist(),k=num_courses)
+    df=df_groups[df_groups['Code'].isin(courses)]
     return df
 
-def classroom_sampling(df_course,num_rooms=10,seed=111):
+def classroom_sampling(df_course, num_rooms=10,seed=111):
     obj=df_course['NUMSTU'].tolist()
     smallest=min(obj)
     largest=max(obj)
@@ -27,7 +27,7 @@ def classroom_sampling(df_course,num_rooms=10,seed=111):
     else:
         return sampled
 
-def generating_trash_schedule(df_course, df_classroom, seed=111):
+def generating_random_schedule(df_course, df_classroom, seed=111):
     random.seed(seed)
     num_rooms = len(df_classroom)
     num_courses = len(df_course)
@@ -64,7 +64,6 @@ if __name__ == '__main__':
 
     df_rooms=DataIntegration.teaching_rooms
     df_rooms['R-Index']=df_rooms.index
-    df_rooms.sort_values(by='Capacity')
     # df_roomss=df_rooms.sort_values(by='Capacity')
 
 
@@ -102,11 +101,13 @@ if __name__ == '__main__':
     # a=course_sampling()
     # b=classroom_sampling(a)
     # d=a['P-Index'].unique().tolist()
-    # c=generating_trash_schedule(a,b)
+    # c=generating_random_schedule(a,b)
 
-    num_dept=3
+    num_dept=4
     num_courses=50
     num_rooms=10
+
+    num_sample=1000
 
     random.seed(457)
     seeds=random.sample(range(1,10000000), 1000)
@@ -119,7 +120,7 @@ if __name__ == '__main__':
         df_room=classroom_sampling(df_course,num_rooms,seeds[i]+1)
         prof=df_course['P-Index'].unique().tolist()
         prof=pd.DataFrame({'sample_id':i,'P-Index':prof})
-        df_poor_schedule=generating_trash_schedule(df_course, df_room,seed=seeds[i]+2)
+        df_poor_schedule=generating_random_schedule(df_course, df_room,seed=seeds[i]+2)
 
         df_course['sample_id']=i
         df_room['sample_id']=i
@@ -135,10 +136,10 @@ if __name__ == '__main__':
     df_all_professors=pd.concat(all_professors,ignore_index=True)
     df_all_poor_schedule=pd.concat(all_poor_schedule,ignore_index=True)
 
-    df_all_courses.to_csv('Sample\courses_sampling_' + str(num_courses) + '.csv',index=False)
-    df_all_rooms.to_csv('Sample\\rooms_sampling_' + str(num_rooms) + '.csv',index=False)
-    df_all_professors.to_csv('Sample\professors_sampling_' + str(num_courses) + '.csv',index=False)
-    df_all_poor_schedule.to_csv('Sample\poor_schedule_generating_' + str(num_courses) + '.csv',index=False)
+    df_all_courses.to_csv('Sample/courses_sampling_' + str(num_courses) + '.csv',index=False)
+    df_all_rooms.to_csv('Sample/rooms_sampling_' + str(num_rooms) + '.csv',index=False)
+    df_all_professors.to_csv('Sample/professors_sampling_' + str(num_courses) + '.csv',index=False)
+    df_all_poor_schedule.to_csv('Sample/poor_schedule_generating_' + str(num_courses) + '.csv',index=False)
 
 
 
@@ -152,7 +153,7 @@ if __name__ == '__main__':
             df['sample_id']=i
             all_opt_solution.append(df)
     df_all_opt_solution=pd.concat(all_opt_solution,ignore_index=True)
-    df_all_opt_solution.to_csv('Sample\optimized_schedule_' + str(num_courses) + '.csv',index=False)
+    df_all_opt_solution.to_csv('Sample/optimized_schedule_' + str(num_courses) + '.csv',index=False)
 
     
     
