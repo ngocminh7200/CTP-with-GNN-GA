@@ -298,10 +298,6 @@ def make_edge_index(edge_pairs,source,destination):
         dst.append(dst_idx)
     edge_index=torch.tensor([src,dst],dtype=torch.long)
     return edge_index
-        
-        
-
-#%%
 
 class HeteroGraphSAGE(nn.Module):
     def __init__(self, hidden_channels, out_channels, metadata):

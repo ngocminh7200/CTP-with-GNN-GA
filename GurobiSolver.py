@@ -1,7 +1,5 @@
 """
 College Timetabling Problem (CTP) — Gurobi MILP Implementation
-================================================================
-Based on the GNN–GA hybrid framework (Cornei & Breabăn, 2026).
 
 Decision variable:  x[c,t,r] ∈ {0,1}
     1 if course c is assigned to timeslot t in room r; 0 otherwise.
@@ -17,56 +15,123 @@ from gurobipy import GRB
 # 1.  SAMPLE DATA  (replace with your own)
 # ──────────────────────────────────────────────
 
-# Courses
-courses = ["CS101", "CS201", "CS301", "MATH101", "MATH201",
-           "PHY101", "PHY201", "ENG101", "ENG201", "STAT101"]
+import random
 
-# Professors and the courses they teach
-professors = {
-    "Prof_A": ["CS101", "CS201"],
-    "Prof_B": ["CS301", "STAT101"],
-    "Prof_C": ["MATH101", "MATH201"],
-    "Prof_D": ["PHY101", "PHY201"],
-    "Prof_E": ["ENG101", "ENG201"],
+random.seed(42)  # reproducibility
+
+# ── 1a. Departments & course generation ──
+# 3 departments, each with a mix of 100/200/300/400-level courses.
+# Total: ~67 courses per dept ≈ 200 courses.
+
+departments = {
+    "CS": {"prefix": "CS", "n_courses": 70},
+    "MATH": {"prefix": "MATH", "n_courses": 65},
+    "PHYS": {"prefix": "PHYS", "n_courses": 65},
 }
 
-# Maximum weekly teaching load per professor (number of 2-hr slots)
-W = {
-    "Prof_A": 4,
-    "Prof_B": 3,
-    "Prof_C": 4,
-    "Prof_D": 3,
-    "Prof_E": 4,
+courses = []
+demand = {}
+dept_courses = {d: [] for d in departments}  # track courses per department
+
+course_levels = [100, 200, 300, 400]
+level_demand_range = {  # enrollment ranges by level
+    100: (60, 150),  # intro courses — large
+    200: (40, 100),  # intermediate
+    300: (20, 60),  # upper-division
+    400: (10, 35),  # senior/elective — small
 }
 
-# Rooms and their capacities
+for dept, info in departments.items():
+    prefix = info["prefix"]
+    n = info["n_courses"]
+    # distribute courses roughly across levels
+    per_level = n // len(course_levels)
+    remainder = n % len(course_levels)
+    idx = 1
+    for li, level in enumerate(course_levels):
+        count = per_level + (1 if li < remainder else 0)
+        lo, hi = level_demand_range[level]
+        for _ in range(count):
+            cname = f"{prefix}{level + idx}"
+            courses.append(cname)
+            demand[cname] = random.randint(lo, hi)
+            dept_courses[dept].append(cname)
+            idx += 1
+
+print(f"Generated {len(courses)} courses across {len(departments)} departments")
+
+# ── 1b. Professors ──
+# ~50 professors, each teaching 3-5 courses within their department.
+
+professors = {}
+W = {}
+
+prof_id = 1
+for dept, d_courses in dept_courses.items():
+    remaining = list(d_courses)
+    random.shuffle(remaining)
+    while remaining:
+        load = random.randint(3, 5)
+        assigned = remaining[:load]
+        remaining = remaining[load:]
+        pname = f"Prof_{dept}_{prof_id:02d}"
+        professors[pname] = assigned
+        # weekly slot limit: slightly above their course count so it's
+        # feasible but tight enough that workload penalties can trigger
+        W[pname] = len(assigned) + random.randint(0, 2)
+        prof_id += 1
+
+print(f"Generated {len(professors)} professors")
+
+# ── 1c. Rooms ──
+# 10 rooms with a realistic capacity distribution
+
 rooms = {
-    "R1": 40,
-    "R2": 60,
-    "R3": 100,
-    "R4": 30,
+    "R01": 30,  # small seminar
+    "R02": 30,  # small seminar
+    "R03": 50,  # medium classroom
+    "R04": 50,  # medium classroom
+    "R05": 75,  # medium-large
+    "R06": 75,  # medium-large
+    "R07": 100,  # large classroom
+    "R08": 120,  # large classroom
+    "R09": 150,  # lecture hall
+    "R10": 200,  # auditorium
 }
 
-# Student demand (enrollment) per course
-demand = {
-    "CS101": 90, "CS201": 55, "CS301": 35,
-    "MATH101": 80, "MATH201": 45,
-    "PHY101": 70, "PHY201": 30,
-    "ENG101": 95, "ENG201": 50,
-    "STAT101": 60,
-}
+# ── 1d. Academic programs ──
+# 9 programs (3 per department).  Each program draws a core from its own
+# department plus a few cross-listed courses from the other two depts.
 
-# Academic programs and their course lists
-programs = {
-    "CS_Program":   ["CS101", "CS201", "CS301", "MATH101", "STAT101"],
-    "Math_Program": ["MATH101", "MATH201", "STAT101", "CS101"],
-    "Phys_Program": ["PHY101", "PHY201", "MATH101", "MATH201"],
-    "Eng_Program":  ["ENG101", "ENG201", "MATH101"],
-}
+programs = {}
+for dept, d_courses in dept_courses.items():
+    # split dept courses into 3 program tracks
+    sorted_c = sorted(d_courses)
+    third = len(sorted_c) // 3
+    tracks = [
+        sorted_c[:third],
+        sorted_c[third:2 * third],
+        sorted_c[2 * third:],
+    ]
+    track_names = ["Core", "Applied", "Advanced"]
+    other_depts = [d for d in dept_courses if d != dept]
+    for i, track in enumerate(tracks):
+        # add 4-6 cross-listed courses from other departments
+        cross = []
+        for od in other_depts:
+            cross += random.sample(
+                dept_courses[od],
+                min(random.randint(2, 3), len(dept_courses[od]))
+            )
+        prog_name = f"{dept}_{track_names[i]}"
+        programs[prog_name] = track + cross
+        print(f"  Program {prog_name}: {len(programs[prog_name])} courses")
 
-# Timeslots: 5 slots/day × 5 days = 25 weekly slots
-num_days = 1
-slots_per_day = 4
+# ── 1e. Timeslots ──
+# 5 slots/day × 5 days = 25 weekly slots (each 2 hours)
+
+num_days = 5
+slots_per_day = 5
 num_timeslots = num_days * slots_per_day
 timeslots = list(range(1, num_timeslots + 1))
 

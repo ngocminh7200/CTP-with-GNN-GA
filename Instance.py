@@ -178,21 +178,6 @@ class Instance:
             if not any_overlap:
                 print("  None - all programs are conflict-free!")
 
-            # Workload report
-            # print("\n" + "-" * 65)
-            # print("  INSTRUCTOR WORKLOAD")
-            # print("-" * 65)
-            # for p in professors:
-            #     assigned = sum(
-            #         1 for c in C_p[p] for t in timeslots for r in room_list
-            #         if x[c, t, r].X > 0.5
-            #     )
-            #     excess = s_wl[p].X
-            #     flag = " !!" if excess > 0.5 else ""
-            #     print(f"  {p:<12} assigned: {assigned}/{W[p]} slots{flag}")
-            #
-            # print("=" * 65)
-
         elif self.model.Status == GRB.INFEASIBLE:
             print("\nModel is infeasible. Computing IIS...")
             self.model.computeIIS()
@@ -219,7 +204,3 @@ class Instance:
                     if self.x[c,t,r].X>0.5:
                         df.append({'course index':c,'timeslot':t,'room':r})
         return pd.DataFrame(df)
-
-    # def export_solution(self):
-    #     if self.model.Status == GRB.INFEASIBLE:
-    #         self.model.write("")
