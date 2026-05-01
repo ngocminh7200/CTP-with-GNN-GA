@@ -159,8 +159,8 @@ if __name__ == '__main__':  # the following code will be run if and only if this
     
     # the following part focuses on using Gurobi solver to solve for optimized solution according to each cases generated above
     all_opt_solution=[]  # create an empty string for appending loop outputs
-    red='\033[91m'  # place it in a string, and text after it will become red
-    RESET='\033[0m'  # place it in a string, and text after it will change back to their original color
+    red='\033[91m'  # print this, and text after it will become red
+    RESET='\033[0m'  # print this, and text after it will change back to their original color
     for i in range(len(seeds)):  # a different seed for each loop
         ist=Instance(all_courses_sampling[i], all_rooms_sampling[i],25,all_professors[i]['P-Index'].tolist())  # Instance is a new class defined in Instance.py
         ist.generate_Gurobi_model() # the instance function, to summarize, it will build the gurobi model by adding constraints, according to that file, the model is stored in ist.model
