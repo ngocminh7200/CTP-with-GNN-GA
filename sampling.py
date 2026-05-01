@@ -103,14 +103,14 @@ if __name__ == '__main__':
     # d=a['P-Index'].unique().tolist()
     # c=generating_random_schedule(a,b)
 
-    num_dept=4
-    num_courses=50
-    num_rooms=10
+    num_dept=10
+    num_courses=400
+    num_rooms=50
 
-    num_sample=1000
+    num_sample=200
 
     random.seed(457)
-    seeds=random.sample(range(1,10000000), 1000)
+    seeds=random.sample(range(1,10000000), num_sample)
     all_courses_sampling=[]
     all_rooms_sampling=[]
     all_professors=[]
@@ -145,6 +145,7 @@ if __name__ == '__main__':
 
     all_opt_solution=[]
     for i in range(len(seeds)):
+        print('Sample:', i)
         ist=Instance(all_courses_sampling[i], all_rooms_sampling[i],25,all_professors[i]['P-Index'].tolist())
         ist.generate_Gurobi_model()
         ist.solve_Gurobi()
