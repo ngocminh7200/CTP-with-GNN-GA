@@ -212,18 +212,18 @@ class Graph:
         crowding_norm = crowding / max(C, 1)
 
         return np.stack([
-            self.h2_course,  # [0]  professor conflict
-            self.h3_course,  # [1]  room conflict
-            self.h4_course,  # [2]  capacity violation
-            self.h4_overflow_norm,  # [3]  overflow degree
-            room_fit,  # [4]  room fit ratio
-            flexibility,  # [5]  room flexibility
-            feasibility,  # [6]  feasibility ratio (scalar summary)
-            prof_load_norm,  # [7]  professor busyness
-            current_ts_norm,  # [8]  current timeslot
-            enrollment_norm,  # [9]  enrollment size
-            s2_exposure,  # [10] program overlap
-            crowding_norm,  # [11] timeslot crowding
+            self.h2_course,        # [0]  professor conflict
+            self.h3_course,        # [1]  room conflict
+            self.h4_course,        # [2]  capacity violation
+            self.h4_overflow_norm, # [3]  overflow degree
+            room_fit,              # [4]  room fit ratio
+            flexibility,           # [5]  room flexibility
+            feasibility,           # [6]  feasibility ratio (scalar summary)
+            prof_load_norm,        # [7]  professor busyness
+            current_ts_norm,       # [8]  current timeslot
+            enrollment_norm,       # [9]  enrollment size
+            s2_exposure,           # [10] program overlap
+            crowding_norm,         # [11] timeslot crowding
         ], axis=1).astype(np.float32)
 
     # above has been fixed
@@ -290,10 +290,10 @@ class Graph:
         demand_ratio = total_assigned / T
 
         return np.stack([
-            h3_any,  # [0]
-            h3_ratio,  # [1]
-            occupancy,  # [2]
-            capacity_norm,  # [3]
+            h3_any,        # [0]
+            h3_ratio,      # [1]
+            occupancy,     # [2]
+            capacity_norm, # [3]
             demand_ratio,  # [4]
         ], axis=1).astype(np.float32)
 
