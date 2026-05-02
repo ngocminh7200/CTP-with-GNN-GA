@@ -99,10 +99,23 @@ def train_one_epoch(model, loader, optimizer, device):
         ts_targets = data['course'].y_ts
         ts_loss = F.cross_entropy(ts_logits, ts_targets)
 
-        targets = data['course'].y  # [total_courses_in_batch]
-        loss = F.cross_entropy(logits, targets)
+        # Room targets stored in dataset are local (per-instance) indices.
+        # But after PyG batching, the room nodes are globally indexed.
+        # The pointer network outputs padded local logits, so we need
+        # local targets. When batched, y_room is already auto-offset to
+        # global indices by PyG, so we convert back to local.
+        if room_batch is not None and course_batch is not None:
+            room_targets_local = build_room_local_targets(
+                room_batch, course_batch, data['course'].y_room
+            )
+        else:
+            room_targets_local = data['course'].y_room
+
+        room_loss = F.cross_entropy(room_logits, room_targets_local)
+        loss = ts_loss + room_loss
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += loss.item() * num_courses
@@ -284,8 +297,12 @@ if __name__ == "__main__":
     ).to(device)
 
     # AdamW with weight_decay=0.0001, lr=0.001 (paper's best config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.0001)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
+
+    # ReduceLROnPlateau: halve LR if val loss stalls for 10 epochs
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=10, verbose=True,
+    )
 
     print(f"\n{model}")
     total_params = sum(p.numel() for p in model.parameters())
