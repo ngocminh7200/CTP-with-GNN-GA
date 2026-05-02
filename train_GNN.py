@@ -38,17 +38,35 @@ def extract_mappings_from_edges(edge_index_dict, num_courses):
 
     return mappings
 
-# def train(model):
-#     model.train()
-#
-#     for data in train_loader:  # Iterate in batches over the training dataset.
-#         out = model(
-#             data.x, data.edge_index, data.batch
-#         )  # Perform a single forward pass.
-#         loss = criterion(out, data.y)  # Compute the loss.
-#         loss.backward()  # Derive gradients.
-#         optimizer.step()  # Update parameters based on gradients.
-#         optimizer.zero_grad()  # Clear gradients.
+
+def build_room_local_targets(room_batch, course_batch, y_room_global):
+    """
+    Convert global room target indices into local (per-graph) indices
+    that align with the pointer network's padded room logits.
+
+    When PyG batches multiple graphs, each graph's room nodes get offset
+    in the global indexing. The pointer network outputs logits over local
+    room indices (0..R_i-1 for graph i). This function converts each
+    course's global room target back to its local position.
+    """
+
+    R_total = room_batch.size(0)
+    device = room_batch.device
+
+    # Build global-to-local room index map
+    # For each room node, compute its position among rooms of its own graph
+    global_to_local = torch.zeros(R_total, dtype=torch.long, device=device)
+    num_graphs = room_batch.max().item() + 1
+    room_offset = torch.zeros(num_graphs, dtype=torch.long, device=device)
+
+    for i in range(R_total):
+        g = room_batch[i].item()
+        global_to_local[i] = room_offset[g]
+        room_offset[g] += 1
+
+    # Map each course's global room target to local index
+    return global_to_local[y_room_global]
+
 
 def train_one_epoch(model, loader, optimizer, device):
     model.train()
@@ -62,16 +80,24 @@ def train_one_epoch(model, loader, optimizer, device):
         # Extract mapping tensors from batched edge indices
         mappings = extract_mappings_from_edges(data.edge_index_dict, num_courses)
 
+        course_batch = data['course'].batch if hasattr(data['course'], 'batch') else None
+        room_batch = data['Room'].batch if hasattr(data['Room'], 'batch') else None
+
         optimizer.zero_grad()
 
-        logits = model(
+        ts_logits, room_logits = model(
             data.x_dict,
             data.edge_index_dict,
             mappings['professor'],
             mappings['room'],
             mappings['program'],
             mappings['timeslot'],
-        )  # [total_courses_in_batch, num_timeslots]
+            course_batch=course_batch,
+            room_batch=room_batch,
+        )
+
+        ts_targets = data['course'].y_ts
+        ts_loss = F.cross_entropy(ts_logits, ts_targets)
 
         targets = data['course'].y  # [total_courses_in_batch]
         loss = F.cross_entropy(logits, targets)
@@ -88,9 +114,8 @@ def train_one_epoch(model, loader, optimizer, device):
 @torch.no_grad()
 def evaluate(model, loader, device):
     """
-    Evaluate using the paper's validation metric:
-    - Primary: fraction of schedules that are optimal or feasible
-    - Also returns average cross-entropy loss and per-course accuracy
+    Evaluate on both timeslot and room predictions.
+    Returns avg_loss, ts_accuracy, room_accuracy, both_accuracy.
     """
     model.eval()
     total_loss = 0
@@ -115,6 +140,8 @@ def evaluate(model, loader, device):
             mappings['room'],
             mappings['program'],
             mappings['timeslot'],
+            course_batch=course_batch,
+            room_batch=room_batch,
         )
 
         # Timeslot loss + accuracy
@@ -253,10 +280,12 @@ if __name__ == "__main__":
         nb_heads=8,
         dropout_conv=0.0,
         dropout_mlp=0.0,
+        **feature_dims,
     ).to(device)
 
     # AdamW with weight_decay=0.0001, lr=0.001 (paper's best config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.0001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
 
     print(f"\n{model}")
     total_params = sum(p.numel() for p in model.parameters())
