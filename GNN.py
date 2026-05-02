@@ -5,31 +5,6 @@ from torch_geometric.nn import TransformerConv, HeteroConv
 
 
 class GNN(torch.nn.Module):
-    """
-    Heterogeneous GNN for university course timetabling, using the architecture
-    from "Enhancing GAs with GNNs" (Cornei & Breaban, 2026) adapted to a
-    course-scheduling graph with 5 node types:
-
-        course    (6 features)  — central decision variable
-        professor (3 features)  — teaches courses, involved in H2
-        Room      (3 features)  — hosts courses, involved in H3/H4
-        program   (4 features)  — groups of courses, involved in S2
-        timeslot  (3 features)  — when courses happen, aggregates conflicts
-
-    Edge types (made bidirectional by T.ToUndirected):
-        course  --taught_by-->    professor
-        course  --take_place_in-> Room
-        course  --belong_to-->    program
-        course  --when-->         timeslot
-        + all reverses
-
-    Architecture (from the paper's best config):
-        - 4 heterogeneous TransformerConv layers, 8 attention heads
-        - Concatenation of course embedding with its professor, room, program,
-          and timeslot embeddings
-        - 4-layer MLP outputting timeslot probabilities per course
-    """
-
     def __init__(
         self,
         num_timeslots: int = 25,
@@ -109,33 +84,41 @@ class GNN(torch.nn.Module):
             }
             self.conv_layers.append(HeteroConv(conv_dict, aggr='sum'))
 
-        # --- MLP head ---
-        # Concatenate course embedding with its professor, room, program, timeslot
-        mlp_input_dim = hidden_channels * 5
-        mlp_layers = []
+        # --- Shared feature concatenation dimension ---
+        mlp_input_dim = hidden_channels * 5  # course + prof + room + program + timeslot
+
+        # --- Timeslot prediction head ---
+        ts_layers = []
         for i in range(nb_layers_mlp - 1):
             in_dim = mlp_input_dim if i == 0 else hidden_channels
-            mlp_layers.append(Linear(in_dim, hidden_channels))
-            mlp_layers.append(ReLU())
+            ts_layers.append(Linear(in_dim, hidden_channels))
+            ts_layers.append(ReLU())
             if dropout_mlp > 0:
-                mlp_layers.append(Dropout(dropout_mlp))
-        mlp_layers.append(Linear(hidden_channels, num_timeslots))
-        self.mlp = Sequential(*mlp_layers)
+                ts_layers.append(Dropout(dropout_mlp))
+        ts_layers.append(Linear(hidden_channels, num_timeslots))
+        self.timeslot_head = Sequential(*ts_layers)
 
-    def forward(self, x_dict, edge_index_dict, course_to_professor,
-                course_to_room, course_to_program, course_to_timeslot):
-        """
-        Args:
-            x_dict: node type -> feature tensor from HeteroData.x_dict
-            edge_index_dict: edge type -> [2, E] from HeteroData.edge_index_dict
-            course_to_professor: LongTensor [C] — professor index for each course
-            course_to_room: LongTensor [C] — room index for each course
-            course_to_program: LongTensor [C] — program index for each course
-            course_to_timeslot: LongTensor [C] — timeslot index for each course
+        # --- Room prediction head (pointer network) ---
+        # Instead of a fixed-size classification head, we project the course
+        # context to a query vector and compute a dot-product score against
+        # every room embedding in the instance. This naturally handles
+        # variable numbers of rooms across instances and batches.
+        room_query_layers = []
+        for i in range(nb_layers_mlp - 1):
+            in_dim = mlp_input_dim if i == 0 else hidden_channels
+            room_query_layers.append(Linear(in_dim, hidden_channels))
+            room_query_layers.append(ReLU())
+            if dropout_mlp > 0:
+                room_query_layers.append(Dropout(dropout_mlp))
+        room_query_layers.append(Linear(hidden_channels, hidden_channels))
+        self.room_query_head = Sequential(*room_query_layers)
 
-        Returns:
-            Tensor [C, num_timeslots] — logits over timeslot assignments per course
-        """
+        # Learnable projection for room keys (from backbone room embeddings)
+        self.room_key_proj = Linear(hidden_channels, hidden_channels)
+
+    def _run_backbone(self, x_dict, edge_index_dict, course_to_professor,
+                      course_to_room, course_to_program, course_to_timeslot):
+        """Run the shared backbone and return h_dict and combined course context."""
         # Project all node types to hidden dimension
         h_dict = {
             ntype: self.input_projs[ntype](x_dict[ntype])
@@ -151,25 +134,113 @@ class GNN(torch.nn.Module):
             }
 
         # Concatenate course embedding with related node embeddings
-        course_emb = h_dict['course']                                # [C, hidden]
-        prof_emb = h_dict['professor'][course_to_professor]          # [C, hidden]
-        room_emb = h_dict['Room'][course_to_room]                    # [C, hidden]
-        prog_emb = h_dict['program'][course_to_program]              # [C, hidden]
-        ts_emb = h_dict['timeslot'][course_to_timeslot]              # [C, hidden]
+        course_emb = h_dict['course']
+        prof_emb = h_dict['professor'][course_to_professor]
+        room_emb = h_dict['Room'][course_to_room]
+        prog_emb = h_dict['program'][course_to_program]
+        ts_emb = h_dict['timeslot'][course_to_timeslot]
 
         combined = torch.cat([course_emb, prof_emb, room_emb, prog_emb, ts_emb], dim=-1)
 
-        return self.mlp(combined)  # [C, num_timeslots]
+        return h_dict, combined
 
-    def predict_timeslots(self, x_dict, edge_index_dict, course_to_professor,
-                          course_to_room, course_to_program, course_to_timeslot):
-        """Return argmax timeslot assignment for each course."""
-        logits = self.forward(
+    def forward(self, x_dict, edge_index_dict, course_to_professor,
+                course_to_room, course_to_program, course_to_timeslot,
+                course_batch=None, room_batch=None):
+        """
+        Returns:
+            ts_logits:   Tensor [C, num_timeslots] — logits over timeslot assignments
+            room_logits: Tensor [C, R_max] — logits over room assignments, where
+                         R_max is the max number of rooms in any instance in the
+                         batch. Positions for rooms not belonging to a course's
+                         instance are masked to -inf.
+        """
+        h_dict, combined = self._run_backbone(
             x_dict, edge_index_dict,
             course_to_professor, course_to_room,
             course_to_program, course_to_timeslot,
         )
-        return logits.argmax(dim=-1)
+
+        # --- Timeslot head ---
+        ts_logits = self.timeslot_head(combined)
+
+        # --- Room pointer head ---
+        all_room_embs = h_dict['Room']           # [R_total, H]
+        room_keys = self.room_key_proj(all_room_embs)  # [R_total, H]
+        course_queries = self.room_query_head(combined) # [C, H]
+
+        R_total = all_room_embs.size(0)
+        C = course_queries.size(0)
+
+        if course_batch is None and room_batch is None:
+            # Single graph (no batching): simple dot-product scores
+            # course_queries: [C, H], room_keys: [R, H] => [C, R]
+            room_logits = torch.matmul(course_queries, room_keys.t())
+        else:
+            # Batched: each course should only score rooms from its own graph.
+            # Build a padded [C, R_max] logit matrix with -inf masking.
+            assert course_batch is not None and room_batch is not None, \
+                "Both course_batch and room_batch are needed for batched forward"
+
+            num_graphs = course_batch.max().item() + 1
+
+            # Count rooms per graph and find R_max
+            rooms_per_graph = torch.zeros(num_graphs, dtype=torch.long,
+                                          device=room_keys.device)
+            rooms_per_graph.scatter_add_(0, room_batch,
+                                         torch.ones(R_total, dtype=torch.long,
+                                                    device=room_keys.device))
+            R_max = rooms_per_graph.max().item()
+
+            # Build local room index within each graph
+            # room_local_idx[i] = position of room i among rooms in its graph
+            room_local_idx = torch.zeros(R_total, dtype=torch.long,
+                                         device=room_keys.device)
+            room_offset = torch.zeros(num_graphs, dtype=torch.long,
+                                      device=room_keys.device)
+            for i in range(R_total):
+                g = room_batch[i].item()
+                room_local_idx[i] = room_offset[g]
+                room_offset[g] += 1
+
+            # Pad room keys into [num_graphs, R_max, H]
+            padded_keys = torch.zeros(num_graphs, R_max, self.hidden_channels,
+                                      device=room_keys.device)
+            padded_keys[room_batch, room_local_idx] = room_keys
+
+            # Build mask: [num_graphs, R_max], True where valid
+            valid_mask = torch.zeros(num_graphs, R_max, dtype=torch.bool,
+                                     device=room_keys.device)
+            valid_mask[room_batch, room_local_idx] = True
+
+            # Gather the padded keys and mask for each course's graph
+            # course_graph_keys: [C, R_max, H]
+            course_graph_keys = padded_keys[course_batch]
+            # course_valid_mask: [C, R_max]
+            course_valid_mask = valid_mask[course_batch]
+
+            # Dot product: [C, R_max]
+            room_logits = torch.bmm(
+                course_graph_keys,
+                course_queries.unsqueeze(-1)
+            ).squeeze(-1)
+
+            # Mask out rooms from other graphs
+            room_logits[~course_valid_mask] = float('-inf')
+
+        return ts_logits, room_logits
+
+    def predict(self, x_dict, edge_index_dict, course_to_professor,
+                course_to_room, course_to_program, course_to_timeslot,
+                course_batch=None, room_batch=None):
+        """Return argmax timeslot and room assignment for each course."""
+        ts_logits, room_logits = self.forward(
+            x_dict, edge_index_dict,
+            course_to_professor, course_to_room,
+            course_to_program, course_to_timeslot,
+            course_batch, room_batch,
+        )
+        return ts_logits.argmax(dim=-1), room_logits.argmax(dim=-1)
 
 
 def extract_mapping_tensors(sched, ds):

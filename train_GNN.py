@@ -144,12 +144,54 @@ def evaluate(model, loader, device):
         total_courses += num_courses
 
     avg_loss = total_loss / total_courses
-    accuracy = total_correct / total_courses
-    return avg_loss, accuracy
     ts_acc = total_ts_correct / total_courses
     room_acc = total_room_correct / total_courses
     both_acc = total_both_correct / total_courses
     return avg_loss, ts_acc, room_acc, both_acc
+
+
+def predict_schedule(model, data, instance, device='cpu'):
+    """
+    Run the GNN on a graph and convert predictions to a schedule DataFrame.
+    """
+    model.eval()
+    data = data.to(device)
+    num_courses = data['course'].x.size(0)
+
+    # Extract mapping tensors from edge indices
+    mappings = extract_mappings_from_edges(data.edge_index_dict, num_courses)
+
+    # Run model
+    with torch.no_grad():
+        ts_logits, room_logits = model(
+            data.x_dict,
+            data.edge_index_dict,
+            mappings['professor'],
+            mappings['room'],
+            mappings['program'],
+            mappings['timeslot'],
+        )
+
+    ts_preds = ts_logits.argmax(dim=-1).cpu().numpy()
+    room_preds = room_logits.argmax(dim=-1).cpu().numpy()
+
+    # Build reverse mappings: index -> actual value
+    idx_to_timeslot = {i: t for i, t in enumerate(list(instance.timeslots))}
+    idx_to_room = {i: r for i, r in enumerate(
+        instance.rooms['Host Key'].drop_duplicates().tolist())}
+    idx_to_course = {i: c for i, c in enumerate(instance.course_list)}
+
+    # Build schedule DataFrame
+    rows = []
+    for c in range(num_courses):
+        rows.append({
+            'Index': idx_to_course[c],
+            'timeslot': idx_to_timeslot[ts_preds[c]],
+            'Room': idx_to_room[room_preds[c]],
+        })
+
+    predicted_schedule = pd.DataFrame(rows)
+    return predicted_schedule
 
 
 
