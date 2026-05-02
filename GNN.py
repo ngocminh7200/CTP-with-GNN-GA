@@ -34,11 +34,11 @@ class GNN(torch.nn.Module):
         self,
         num_timeslots: int = 25,
         hidden_channels: int = 64,
-        course_feature_dim: int = 6,
+        course_feature_dim: int = 12,
         professor_feature_dim: int = 3,
-        room_feature_dim: int = 3,
+        room_feature_dim: int = 5,
         program_feature_dim: int = 4,
-        timeslot_feature_dim: int = 3,
+        timeslot_feature_dim: int = 5,
         nb_layers_conv: int = 4,
         nb_layers_mlp: int = 4,
         nb_heads: int = 8,
@@ -66,7 +66,6 @@ class GNN(torch.nn.Module):
         self.conv_layers = ModuleList()
         for _ in range(nb_layers_conv):
             conv_dict = {
-                # Forward edges
                 ('course', 'taught_by', 'professor'): TransformerConv(
                     (hidden_channels, hidden_channels),
                     hidden_channels // nb_heads,
@@ -87,7 +86,6 @@ class GNN(torch.nn.Module):
                     hidden_channels // nb_heads,
                     heads=nb_heads, dropout=dropout_conv,
                 ),
-                # Reverse edges (created by T.ToUndirected)
                 ('professor', 'rev_taught_by', 'course'): TransformerConv(
                     (hidden_channels, hidden_channels),
                     hidden_channels // nb_heads,
