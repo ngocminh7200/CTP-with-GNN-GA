@@ -12,7 +12,7 @@ from torch_geometric.nn import HeteroConv,SAGEConv,Linear
 
 class Graph:
 
-    def __init__(self, instance: Instance, schedule):
+    def __init__(self):
         self.G = nx.Graph()
         self.ds = None
         self.sched = None
@@ -43,8 +43,6 @@ class Graph:
                 self.h2_course[c]=1
 
         # --- H3: Room conflict ---
-        # room_ts[r, t] = number of courses assigned to room r at timeslot t
-        self.room_ts=pd.crosstab(sc['classroom index'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
         all_rooms = ds.rooms['Host Key'].drop_duplicates().tolist()
         self.Room_ts = (
             pd.crosstab(sc['Room'], sc['timeslot'])
@@ -53,9 +51,9 @@ class Graph:
 
         self.h3_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            rm=sc.iloc[c]['classroom index']
+            rm=sc.iloc[c]['Room']
             ts=sc.iloc[c]['timeslot']
-            if self.room_ts[ts][rm] > 1:
+            if self.Room_ts.loc[rm, ts] > 1:
                 self.h3_course[c] = 1.0
 
         # --- H4: Room capacity ---
@@ -77,8 +75,6 @@ class Graph:
 
 
         # --- S2: Program overlap ---
-        # prog_ts[g, t] = courses from program g at timeslot t
-        self.prog_ts=pd.crosstab(sc['dl'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
         all_programs = sc['dl'].unique().tolist()
         self.prog_ts = (
             pd.crosstab(sc['dl'], sc['timeslot'])
@@ -110,11 +106,14 @@ class Graph:
         C = len(ds.course_list)
 
 
-        room_fit=(sc['capacity']/sc['numstu']).to_numpy()
-        room_fit = np.clip(room_fit, 0.0, 3.0)
+            # Find current room's index for excluding this course's contribution
+            current_room_idx = None
+            if current_room in self._room_list:
+                current_room_idx = self._room_list.index(current_room)
 
-        flexibility = np.array([(ds.rooms['Capacity']>=ds.courses.iloc[c]['NUMSTU']).mean()
-                                for c in range(C)], dtype=np.float32)
+            for t_idx, t in enumerate(timeslot_list):
+                # Room occupancy at this timeslot
+                occupancy = self._room_occupied[:, t_idx].copy()
 
 
         return np.stack([
@@ -145,8 +144,11 @@ class Graph:
         conflicts = (self.prof_ts > 1).astype(np.float32)
         h2_any = (conflicts.sum(axis=1).to_numpy() > 0).astype(np.float32)
 
-        course_counts = np.array([len(ds.C_p[p]) for p in ds.professors], dtype=np.float32)
-
+        course_counts = np.array(
+            [len(ds.C_p.get(p, [])) if isinstance(ds.C_p, dict) else len(ds.C_p[p]) if p in ds.C_p else 0
+             for p in self.prof_ts.index.tolist()],
+            dtype=np.float32
+        )
 
         active_slots = (self.prof_ts > 0).astype(np.float32).sum(axis=1).to_numpy()
         teaching_density=active_slots/T
@@ -264,8 +266,8 @@ class Graph:
         self.data=HeteroData()
         
         course_to_idx={course:i for i, course in enumerate(self.ds.course_list)}
-        prof_to_idx={prof:i for i,prof in enumerate(self.ds.professors)}
-        room_to_idx={room:i for i,room in enumerate(self.ds.rooms['R-Index'].tolist())}
+        prof_to_idx={prof:i for i,prof in enumerate(self.ds.professors['P-Index'].drop_duplicates())}
+        room_to_idx={room:i for i,room in enumerate(self.ds.rooms['Host Key'].drop_duplicates())}
         program_to_idx={program:i for i, program in enumerate(self.sched['dl'].unique().tolist())}
         timeslot_to_idx={timeslot:i for i, timeslot in enumerate(list(self.ds.timeslots))}
 
@@ -279,7 +281,7 @@ class Graph:
         
         self.data['course'].x=torch.tensor(course_features,dtype=torch.float)
         self.data['professor'].x=torch.tensor(professor_features,dtype=torch.float)
-        self.data['Room'].x=torch.tensor(Room_features,dtype=torch.float)
+        self.data['Room'].x=torch.tensor(room_features,dtype=torch.float)
         self.data['program'].x=torch.tensor(program_features,dtype=torch.float)
         self.data['timeslot'].x=torch.tensor(timeslot_features,dtype=torch.float)
 
@@ -289,7 +291,7 @@ class Graph:
         course_program=list(self.sched[['Index','dl']].itertuples(index=False,name=None))
 
         self.data['course','taught_by','professor'].edge_index=make_edge_index(course_professor, course_to_idx, prof_to_idx)
-        self.data['course','take_place_in','Room'].edge_index=make_edge_index(course_Room, course_to_idx, Room_to_idx)
+        self.data['course','take_place_in','Room'].edge_index=make_edge_index(course_Room, course_to_idx, room_to_idx)
         self.data['course','belong_to','program'].edge_index=make_edge_index(course_program, course_to_idx, program_to_idx)
         self.data['course','when','timeslot'].edge_index=make_edge_index(course_timeslot, course_to_idx, timeslot_to_idx)
         
