@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
@@ -95,7 +94,9 @@ def evaluate(model, loader, device):
     """
     model.eval()
     total_loss = 0
-    total_correct = 0
+    total_ts_correct = 0
+    total_room_correct = 0
+    total_both_correct = 0
     total_courses = 0
 
     for data in loader:
@@ -104,7 +105,10 @@ def evaluate(model, loader, device):
 
         mappings = extract_mappings_from_edges(data.edge_index_dict, num_courses)
 
-        logits = model(
+        course_batch = data['course'].batch if hasattr(data['course'], 'batch') else None
+        room_batch = data['Room'].batch if hasattr(data['Room'], 'batch') else None
+
+        ts_logits, room_logits = model(
             data.x_dict,
             data.edge_index_dict,
             mappings['professor'],
@@ -113,23 +117,51 @@ def evaluate(model, loader, device):
             mappings['timeslot'],
         )
 
-        targets = data['course'].y
-        loss = F.cross_entropy(logits, targets)
-        preds = logits.argmax(dim=-1)
+        # Timeslot loss + accuracy
+        ts_targets = data['course'].y_ts
+        ts_loss = F.cross_entropy(ts_logits, ts_targets)
+        ts_preds = ts_logits.argmax(dim=-1)
+        ts_correct = (ts_preds == ts_targets)
+
+        # Room loss + accuracy (using local targets)
+        if room_batch is not None and course_batch is not None:
+            room_targets_local = build_room_local_targets(
+                room_batch, course_batch, data['course'].y_room
+            )
+        else:
+            room_targets_local = data['course'].y_room
+
+        room_loss = F.cross_entropy(room_logits, room_targets_local)
+        room_preds = room_logits.argmax(dim=-1)
+        room_correct = (room_preds == room_targets_local)
+
+        loss = ts_loss + room_loss
 
         total_loss += loss.item() * num_courses
-        total_correct += (preds == targets).sum().item()
+        total_ts_correct += ts_correct.sum().item()
+        total_room_correct += room_correct.sum().item()
+        total_both_correct += (ts_correct & room_correct).sum().item()
         total_courses += num_courses
 
     avg_loss = total_loss / total_courses
     accuracy = total_correct / total_courses
     return avg_loss, accuracy
+    ts_acc = total_ts_correct / total_courses
+    room_acc = total_room_correct / total_courses
+    both_acc = total_both_correct / total_courses
+    return avg_loss, ts_acc, room_acc, both_acc
+
 
 
 if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    dataset = torch.load('TrainingData/dataset_50.pt', weights_only=False)
+    cases = [50, 100, 150, 200, 300, 400]
+
+    dataset = []
+
+    for case in cases:
+        dataset += torch.load('TrainingData/dataset_' + str(case) + '.pt', weights_only=False)
 
     n = len(dataset)
     n_train = int(0.8 * n)
