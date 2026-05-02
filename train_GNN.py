@@ -224,50 +224,25 @@ if __name__ == "__main__":
     for data in train_loader:
         print(f"\nSample batch: {data}")
         print(f"Course nodes: {data['course'].x.shape}")
+        print(f"Room nodes: {data['Room'].x.shape}")
         print(f"Edge types: {list(data.edge_index_dict.keys())}")
         break
 
-    for i in range(3):
+    for i in range(min(3, len(dataset))):
         x = dataset[i]['course'].x
-        print(f"Instance {i}: shape={x.shape}")
+        r = dataset[i]['Room'].x
+        print(f"Instance {i}: courses={x.shape}, rooms={r.shape}")
 
-    for i in range(5):
-        data = dataset[i]
-        x = data['course'].x
-        print(f"Instance {i}: {x.shape[0]} courses | "
-              f"h2 conflicts: {x[:, 0].sum():.0f} | "
-              f"h3 conflicts: {x[:, 1].sum():.0f} | "
-              f"h4 violations: {x[:, 2].sum():.0f}")
-
-        print(f"Instance {i}: {x.shape[0]} courses | "
-              f"h2 prof conflicts: {x[:, 0].sum():.0f} | "
-              f"h3 room conflicts: {x[:, 1].sum():.0f} | "
-              f"h4 capacity violations: {x[:, 2].sum():.0f} | "
-              f"h4 overflow mean: {x[:, 3].mean():.3f}")
-
-        y = data['course'].y
-
-        # Get current timeslot assignment from edges
-        edge = data['course', 'when', 'timeslot'].edge_index
-        current_ts = torch.zeros(y.shape[0], dtype=torch.long)
-        current_ts[edge[0]] = edge[1]
-
-        # How many targets differ from input? (should be most of them if degraded)
-        changed = (y != current_ts).sum().item()
-        same = (y == current_ts).sum().item()
-
-        print(f"Instance {i}: {y.shape[0]} courses | "
-              f"target range [{y.min()}-{y.max()}] | "
-              f"same as input: {same} | different: {changed}")
-
-
-    for i in range(5):
-        x = dataset[i]['course'].x
-        room_avail = x[:, 6:31]
-        avg_available = room_avail.mean(dim=1).mean().item()
-        zero_slots = (room_avail == 0).float().mean().item()
-        print(f"Instance {i}: avg room availability: {avg_available:.3f} | "
-              f"zero-availability slots: {zero_slots:.1%}")
+    # --- Auto-detect feature dimensions from dataset ---
+    sample = dataset[0]
+    feature_dims = {
+        'course_feature_dim': sample['course'].x.size(1),
+        'professor_feature_dim': sample['professor'].x.size(1),
+        'room_feature_dim': sample['Room'].x.size(1),
+        'program_feature_dim': sample['program'].x.size(1),
+        'timeslot_feature_dim': sample['timeslot'].x.size(1),
+    }
+    print(f"\nDetected feature dimensions: {feature_dims}")
 
     # --- Model ---
     model = GNN(
@@ -298,7 +273,10 @@ if __name__ == "__main__":
     print("\n--- Training ---")
     for epoch in range(1, nb_max_epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, val_acc = evaluate(model, val_loader, device)
+        val_loss, ts_acc, room_acc, both_acc = evaluate(model, val_loader, device)
+
+        # Step the scheduler
+        scheduler.step(val_loss)
 
         # Early stopping check
         if val_loss < best_val_loss - 1e-6:
@@ -308,10 +286,12 @@ if __name__ == "__main__":
         else:
             epochs_without_improvement += 1
 
+        current_lr = optimizer.param_groups[0]['lr']
+
         if epoch % 5 == 0 or epochs_without_improvement == 0:
-            print(f"Epoch {epoch:3d} | Train Loss: {train_loss:.4f} | "
-                  f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | "
-                  f"Patience: {epochs_without_improvement}/{patience}")
+            print(f"{epoch:5d} | {train_loss:8.4f} | {val_loss:8.4f} | "
+                  f"{ts_acc:6.2%} | {room_acc:6.2%} | {both_acc:6.2%} | "
+                  f"{epochs_without_improvement:2d}/{patience} | {current_lr:.1e}")
 
         if epochs_without_improvement >= patience:
             print(f"\nEarly stopping at epoch {epoch}")
@@ -323,9 +303,12 @@ if __name__ == "__main__":
         model.to(device)
 
     # --- Final evaluation on test set ---
-    test_loss, test_acc = evaluate(model, test_loader, device)
+    test_loss, ts_acc, room_acc, both_acc = evaluate(model, test_loader, device)
     print(f"\n--- Test Results ---")
-    print(f"Test Loss: {test_loss:.4f} | Test Accuracy: {test_acc:.4f}")
+    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Timeslot Accuracy: {ts_acc:.2%}")
+    print(f"Room Accuracy:     {room_acc:.2%}")
+    print(f"Both Correct:      {both_acc:.2%}")
 
     # --- Save model ---
     torch.save(model.state_dict(), "timetabling_gnn_trained.pt")
