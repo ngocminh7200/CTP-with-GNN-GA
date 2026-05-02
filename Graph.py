@@ -14,8 +14,9 @@ class Graph:
 
     def __init__(self, instance: Instance, schedule):
         self.G = nx.Graph()
-        self.ds = instance
-        self.sched = schedule
+        self.ds = None
+        self.sched = None
+        self.data = None
 
     def _check_constraints(self):
         """Compute all constraint violations for the current schedule.
@@ -25,23 +26,30 @@ class Graph:
         C, R, T, P, G = self.ds.get_sizes()
 
         # --- H2: Professor conflict ---
-        # prof_ts[p, t] = number of courses professor p teaches at timeslot t
-
-        self.prof_ts = pd.crosstab(sc['professor'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
+        all_profs = ds.professors['P-Index'].drop_duplicates().tolist()
+        self.prof_ts = (
+            pd.crosstab(sc['P-Index'], sc['timeslot'])
+            .reindex(index=all_profs, columns=ds.timeslots, fill_value=0)
+        )
 
 
 
         # Per-course: does this course cause a professor conflict?
         self.h2_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            prf=sc.iloc[c]['professor']
+            prf=sc.iloc[c]['P-Index']
             ts=sc.iloc[c]['timeslot']
-            if self.prof_ts[ts][prf]>1:
+            if self.prof_ts.loc[prf, ts] > 1:
                 self.h2_course[c]=1
 
         # --- H3: Room conflict ---
         # room_ts[r, t] = number of courses assigned to room r at timeslot t
         self.room_ts=pd.crosstab(sc['classroom index'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
+        all_rooms = ds.rooms['Host Key'].drop_duplicates().tolist()
+        self.Room_ts = (
+            pd.crosstab(sc['Room'], sc['timeslot'])
+            .reindex(index=all_rooms, columns=ds.timeslots, fill_value=0)
+        )
 
         self.h3_course = np.zeros(C, dtype=np.float32)
         for c in range(C):
@@ -55,7 +63,7 @@ class Graph:
         self.h4_course = np.zeros(C, dtype=np.float32)
         self.h4_overflow = np.zeros(C, dtype=np.float32)
         for c in range(C):
-            overflow = sc.iloc[c]['numstu'] -sc.iloc[c]['capacity']
+            overflow = sc.iloc[c]['NUMSTU'] -sc.iloc[c]['Capacity']
             if overflow > 0:
                 self.h4_course[c] = 1.0
                 self.h4_overflow[c] = overflow
@@ -71,6 +79,11 @@ class Graph:
         # --- S2: Program overlap ---
         # prog_ts[g, t] = courses from program g at timeslot t
         self.prog_ts=pd.crosstab(sc['dl'], sc['timeslot']).reindex(columns=ds.timeslots, fill_value=0)
+        all_programs = sc['dl'].unique().tolist()
+        self.prog_ts = (
+            pd.crosstab(sc['dl'], sc['timeslot'])
+            .reindex(index=all_programs, columns=ds.timeslots, fill_value=0)
+        )
 
         # s^overlap_{g,t} = max(0, prog_ts - 1)
         self.s2_overlap = np.maximum(0, self.prog_ts - 1).astype(np.float32)
@@ -235,7 +248,8 @@ class Graph:
         worst_norm = (worst/max_worst).to_numpy()
 
         counts = np.array([len(ds.C_g[g]) for g in G], dtype=np.float32)
-        counts_norm = counts/counts.max()
+        max_counts = max(counts.max(), 1.0)
+        counts_norm = counts / max_counts
 
         return np.stack([
             total_norm,  # [0]
@@ -265,27 +279,23 @@ class Graph:
         
         self.data['course'].x=torch.tensor(course_features,dtype=torch.float)
         self.data['professor'].x=torch.tensor(professor_features,dtype=torch.float)
-        self.data['room'].x=torch.tensor(room_features,dtype=torch.float)
+        self.data['Room'].x=torch.tensor(Room_features,dtype=torch.float)
         self.data['program'].x=torch.tensor(program_features,dtype=torch.float)
         self.data['timeslot'].x=torch.tensor(timeslot_features,dtype=torch.float)
-        
-        course_professor=list(self.sched[['course index','professor']].itertuples(index=False,name=None))
-        course_room=list(self.sched[['course index','classroom index']].itertuples(index=False,name=None))
-        course_timeslot=list(self.sched[['course index','timeslot']].itertuples(index=False,name=None))
-        course_program=list(self.sched[['course index','dl']].itertuples(index=False,name=None))
-        
+
+        course_professor=list(self.sched[['Index','P-Index']].itertuples(index=False,name=None))
+        course_Room=list(self.sched[['Index','Room']].itertuples(index=False,name=None))
+        course_timeslot=list(self.sched[['Index','timeslot']].itertuples(index=False,name=None))
+        course_program=list(self.sched[['Index','dl']].itertuples(index=False,name=None))
+
         self.data['course','taught_by','professor'].edge_index=make_edge_index(course_professor, course_to_idx, prof_to_idx)
-        self.data['course','take_place_in','room'].edge_index=make_edge_index(course_room, course_to_idx, room_to_idx)
+        self.data['course','take_place_in','Room'].edge_index=make_edge_index(course_Room, course_to_idx, Room_to_idx)
         self.data['course','belong_to','program'].edge_index=make_edge_index(course_program, course_to_idx, program_to_idx)
         self.data['course','when','timeslot'].edge_index=make_edge_index(course_timeslot, course_to_idx, timeslot_to_idx)
         
         self.data=T.ToUndirected()(self.data)
-    
-    def build_model(self):
-        self.build_graph()
-        self.model=HeteroGraphSAGE(64, 32, self.data.metadata())
-        self.out=self.model(self.data.x_dict,self.data.edge_index_dict)
-        
+
+        return self.data
 
 
 def make_edge_index(edge_pairs,source,destination):
