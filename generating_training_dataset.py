@@ -1,9 +1,6 @@
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch_geometric.loader import DataLoader
-from GNN import GNN
 from Graph import Graph
 from Instance import Instance
 
@@ -243,18 +240,21 @@ if __name__ == "__main__":
 
     cases = [[50, 10], [100, 20], [150, 25], [200, 30], [300, 37], [400, 50]]
 
-    # --- Build dataset ---
-    # dataset = create_dataset(
-    #     "Sample/courses_sampling_400.csv",
-    #     "Sample/rooms_sampling_50.csv",
-    #     "Sample/poor_schedule_generating_400.csv",
-    #     "Sample/optimized_schedule_400.csv"
-    # )
+    # Curriculum of difficulty levels following the paper's Section 4.2:
+    # For each optimized schedule, generate degraded versions at multiple
+    # levels. This gives the model easier examples (5-10% degraded) alongside
+    # harder ones (50%+ degraded), so it can learn incrementally.
+    degrade_ratios = [0.05, 0.10, 0.20, 0.40]
+    extra_per_ratio = 2  # 2 degraded copies per ratio per instance
+
     for course, room in cases:
+        print(f"\n=== Processing case: {course} courses, {room} rooms ===")
         dataset = create_dataset(
             'Sample/courses_sampling_' + str(course) + '.csv',
             'Sample/rooms_sampling_' + str(room) + '.csv',
             'Sample/poor_schedule_generating_' + str(course) + '.csv',
-            'Sample/optimized_schedule_' + str(course) + '.csv'
+            'Sample/optimized_schedule_' + str(course) + '.csv',
+            extra_degrade_ratios=degrade_ratios,
+            extra_per_ratio=extra_per_ratio,
         )
         torch.save(dataset, 'TrainingData/dataset_' + str(course) + '.pt')
