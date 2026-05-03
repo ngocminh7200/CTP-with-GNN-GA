@@ -245,117 +245,160 @@ if __name__ == "__main__":
     for case in cases:
         dataset += torch.load('TrainingData/dataset_' + str(case) + '.pt', weights_only=False)
 
-    n = len(dataset)
-    n_train = int(0.8 * n)
-    n_val = int(0.1 * n)
+    # Inspect a single graph
+    g = dataset[0]
+    print(f"\n--- Single graph ---")
+    print(f"  Node types: {list(g.x_dict.keys())}")
+    for ntype, x in g.x_dict.items():
+        print(f"  {ntype:>12}: {x.shape[0]:>4} nodes × {x.shape[1]} features")
+    print(f"  Edge types: {list(g.edge_index_dict.keys())}")
+    print(f"  y_ts  range: [{g['course'].y_ts.min()}, {g['course'].y_ts.max()}]")
+    print(f"  y_room range: [{g['course'].y_room.min()}, {g['course'].y_room.max()}]")
 
-    train_data = dataset[:n_train]
-    val_data = dataset[n_train:n_train + n_val]
-    test_data = dataset[n_train + n_val:]
-
-    train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=64)
-    test_loader = DataLoader(test_data, batch_size=64)
-
-    print(f"Dataset: {n} graphs (train={len(train_data)}, "
-          f"val={len(val_data)}, test={len(test_data)})")
-
-    # Inspect one batch
-    for data in train_loader:
-        print(f"\nSample batch: {data}")
-        print(f"Course nodes: {data['course'].x.shape}")
-        print(f"Room nodes: {data['Room'].x.shape}")
-        print(f"Edge types: {list(data.edge_index_dict.keys())}")
-        break
-
-    for i in range(min(3, len(dataset))):
-        x = dataset[i]['course'].x
-        r = dataset[i]['Room'].x
-        print(f"Instance {i}: courses={x.shape}, rooms={r.shape}")
-
-    # --- Auto-detect feature dimensions from dataset ---
-    sample = dataset[0]
+    # Build model with auto-detected dims
     feature_dims = {
-        'course_feature_dim': sample['course'].x.size(1),
-        'professor_feature_dim': sample['professor'].x.size(1),
-        'room_feature_dim': sample['Room'].x.size(1),
-        'program_feature_dim': sample['program'].x.size(1),
-        'timeslot_feature_dim': sample['timeslot'].x.size(1),
+        'course_feature_dim': g['course'].x.size(1),
+        'professor_feature_dim': g['professor'].x.size(1),
+        'room_feature_dim': g['Room'].x.size(1),
+        'program_feature_dim': g['program'].x.size(1),
+        'timeslot_feature_dim': g['timeslot'].x.size(1),
     }
-    print(f"\nDetected feature dimensions: {feature_dims}")
+    print(f"\nFeature dims: {feature_dims}")
 
-    # --- Model ---
     model = GNN(
         num_timeslots=25,
         hidden_channels=64,
         nb_layers_conv=4,
         nb_layers_mlp=4,
         nb_heads=8,
-        dropout_conv=0.0,
-        dropout_mlp=0.0,
         **feature_dims,
     ).to(device)
 
-    # AdamW with weight_decay=0.0001, lr=0.001 (paper's best config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {total_params:,}\n")
 
-    # ReduceLROnPlateau: halve LR if val loss stalls for 10 epochs
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10,
+    # Forward pass
+    print("--- Single graph forward pass ---")
+    g = g.to(device)
+    num_courses = g['course'].x.size(0)
+    mappings = extract_mappings_from_edges(g.edge_index_dict, num_courses)
+
+    model.eval()
+    with torch.no_grad():
+        ts_logits, room_logits = model(
+            g.x_dict, g.edge_index_dict,
+            mappings['professor'], mappings['room'],
+            mappings['program'], mappings['timeslot'],
+        )
+    print(f"  ts_logits:   {ts_logits.shape}  (expect [{num_courses}, 25])")
+    print(f"  room_logits: {room_logits.shape}  (expect [{num_courses}, {g['Room'].x.size(0)}])")
+
+    ts_preds = ts_logits.argmax(dim=-1)
+    room_preds = room_logits.argmax(dim=-1)
+    num_rooms = g['Room'].x.size(0)
+    assert ts_logits.shape == (num_courses, 25), f"ts_logits shape mismatch!"
+    assert room_logits.shape == (num_courses, num_rooms), f"room_logits shape mismatch!"
+    assert room_preds.max() < num_rooms, f"Room prediction {room_preds.max()} >= {num_rooms}!"
+    print("  ✓ Shapes and ranges correct")
+
+    # Batched forward pass
+    print("\n--- Batched forward pass (batch_size=4) ---")
+    loader = DataLoader(dataset[:min(8, len(dataset))], batch_size=4, shuffle=False)
+    batch = next(iter(loader)).to(device)
+    num_courses_batch = batch['course'].x.size(0)
+    mappings_b = extract_mappings_from_edges(batch.edge_index_dict, num_courses_batch)
+
+    course_batch = batch['course'].batch
+    room_batch = batch['Room'].batch
+
+    with torch.no_grad():
+        ts_logits_b, room_logits_b = model(
+            batch.x_dict, batch.edge_index_dict,
+            mappings_b['professor'], mappings_b['room'],
+            mappings_b['program'], mappings_b['timeslot'],
+            course_batch=course_batch,
+            room_batch=room_batch,
+        )
+    print(f"  ts_logits:   {ts_logits_b.shape}")
+    print(f"  room_logits: {room_logits_b.shape}")
+
+    # Check room predictions are within valid range per graph
+    room_preds_b = room_logits_b.argmax(dim=-1)
+    rooms_per_graph = torch.zeros(course_batch.max() + 1, dtype=torch.long, device=device)
+    rooms_per_graph.scatter_add_(0, room_batch, torch.ones_like(room_batch))
+    R_max = rooms_per_graph.max().item()
+    assert room_logits_b.shape[1] == R_max, f"Room logits width {room_logits_b.shape[1]} != R_max {R_max}"
+    print(f"R_max in batch: {R_max}")
+
+    # One training step
+    print("\n--- Training step ---")
+    model.train()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    optimizer.zero_grad()
+
+    ts_logits_b, room_logits_b = model(
+        batch.x_dict, batch.edge_index_dict,
+        mappings_b['professor'], mappings_b['room'],
+        mappings_b['program'], mappings_b['timeslot'],
+        course_batch=course_batch,
+        room_batch=room_batch,
     )
 
-    print(f"\n{model}")
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Total parameters: {total_params:,}")
+    ts_loss = F.cross_entropy(ts_logits_b, batch['course'].y_ts)
+    room_targets_local = build_room_local_targets(
+        room_batch, course_batch, batch['course'].y_room
+    )
+    room_loss = F.cross_entropy(room_logits_b, room_targets_local)
+    loss = ts_loss + room_loss
 
-    # --- Training with early stopping (patience=30 per paper) ---
-    patience = 30
-    best_val_loss = float('inf')
-    epochs_without_improvement = 0
-    best_model_state = None
+    loss.backward()
 
-    nb_max_epochs = 200
+    # Check gradients exist and are finite
+    grad_norms = []
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            gn = p.grad.norm().item()
+            grad_norms.append(gn)
+            if not torch.isfinite(p.grad).all():
+                print(f"  WARNING: non-finite gradient in {name}")
 
-    print("\n--- Training ---")
-    for epoch in range(1, nb_max_epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, ts_acc, room_acc, both_acc = evaluate(model, val_loader, device)
+    optimizer.step()
 
-        # Step the scheduler
-        scheduler.step(val_loss)
+    print(f"  ts_loss:   {ts_loss.item():.4f}  (random baseline ~{torch.log(torch.tensor(25.0)).item():.2f})")
+    print(f"  room_loss: {room_loss.item():.4f}  (random baseline ~{torch.log(torch.tensor(float(R_max))).item():.2f})")
+    print(f"  total:     {loss.item():.4f}")
+    print(f"  grad norms: min={min(grad_norms):.4f}, max={max(grad_norms):.4f}, "
+          f"mean={sum(grad_norms) / len(grad_norms):.4f}")
+    print(f"  params with gradients: {len(grad_norms)}/{sum(1 for _ in model.parameters())}")
+    print("  ✓ Backward pass and optimizer step successful")
 
-        # Early stopping check
-        if val_loss < best_val_loss - 1e-6:
-            best_val_loss = val_loss
-            epochs_without_improvement = 0
-            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        else:
-            epochs_without_improvement += 1
+    # Quick overfit test (50 steps on 1 batch)
+    print("\n--- Overfit test (50 steps, 1 batch) ---")
+    print(f"  {'Step':>4} | {'Loss':>8} | {'TS Acc':>7} | {'Rm Acc':>7} | {'Both':>7}")
+    print("  " + "-" * 48)
+    losses = []
+    for step in range(1, 51):
+        optimizer.zero_grad()
+        ts_out, room_out = model(
+            batch.x_dict, batch.edge_index_dict,
+            mappings_b['professor'], mappings_b['room'],
+            mappings_b['program'], mappings_b['timeslot'],
+            course_batch=course_batch,
+            room_batch=room_batch,
+        )
+        l = F.cross_entropy(ts_out, batch['course'].y_ts) + \
+            F.cross_entropy(room_out, room_targets_local)
+        l.backward()
+        optimizer.step()
+        losses.append(l.item())
 
-        current_lr = optimizer.param_groups[0]['lr']
+        # Compute accuracy
+        ts_correct = (ts_out.argmax(dim=-1) == batch['course'].y_ts)
+        room_correct = (room_out.argmax(dim=-1) == room_targets_local)
+        ts_acc = ts_correct.float().mean().item()
+        room_acc = room_correct.float().mean().item()
+        both_acc = (ts_correct & room_correct).float().mean().item()
 
-        if epoch % 5 == 0 or epochs_without_improvement == 0:
-            print(f"{epoch:5d} | {train_loss:8.4f} | {val_loss:8.4f} | "
-                  f"{ts_acc:6.2%} | {room_acc:6.2%} | {both_acc:6.2%} | "
-                  f"{epochs_without_improvement:2d}/{patience} | {current_lr:.1e}")
+        if step <= 5 or step % 10 == 0:
+            print(f"  {step:4d} | {l.item():8.4f} | {ts_acc:6.2%} | {room_acc:6.2%} | {both_acc:6.2%}")
 
-        if epochs_without_improvement >= patience:
-            print(f"\nEarly stopping at epoch {epoch}")
-            break
-
-    # Restore best model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-        model.to(device)
-
-    # --- Final evaluation on test set ---
-    test_loss, ts_acc, room_acc, both_acc = evaluate(model, test_loader, device)
-    print(f"\n--- Test Results ---")
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Timeslot Accuracy: {ts_acc:.2%}")
-    print(f"Room Accuracy:     {room_acc:.2%}")
-    print(f"Both Correct:      {both_acc:.2%}")
-
-    # --- Save model ---
-    torch.save(model.state_dict(), "timetabling_gnn_trained.pt")
-    print("\nModel saved to timetabling_gnn_trained.pt")

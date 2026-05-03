@@ -23,9 +23,7 @@ class GNN(torch.nn.Module):
         super().__init__()
 
         self.num_timeslots = num_timeslots
-        self.nb_layers_conv = nb_layers_conv
-        self.dropout_conv = dropout_conv
-        self.dropout_mlp = dropout_mlp
+        self.hidden_channels = hidden_channels
 
         # --- Input projections ---
         self.input_projs = ModuleDict({
