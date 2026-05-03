@@ -301,7 +301,7 @@ if __name__ == "__main__":
 
     # ReduceLROnPlateau: halve LR if val loss stalls for 10 epochs
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10, verbose=True,
+        optimizer, mode='min', factor=0.5, patience=10,
     )
 
     print(f"\n{model}")
