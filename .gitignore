@@ -1,2 +1,7 @@
 *.xml
 /__pycache__
+/TrainingData
+/src/__pycache__
+/data
+/.idea
+/TrainingData

@@ -24,9 +24,9 @@ random.seed(42)  # reproducibility
 # Total: ~67 courses per dept ≈ 200 courses.
 
 departments = {
-    "CS": {"prefix": "CS", "n_courses": 70},
-    "MATH": {"prefix": "MATH", "n_courses": 65},
-    "PHYS": {"prefix": "PHYS", "n_courses": 65},
+    "CS": {"prefix": "CS", "n_courses": 500},
+    "MATH": {"prefix": "MATH", "n_courses": 500},
+    "PHYS": {"prefix": "PHYS", "n_courses": 500},
 }
 
 courses = []
