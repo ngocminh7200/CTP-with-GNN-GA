@@ -1,31 +1,34 @@
 import pandas as pd
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from DataIntegration import course_df
+import random
+import time
+import matplotlib.pyplot as plt
 
 
 
-course_df = pd.read_excel(r"/Users/t.reddy/Library/CloudStorage/OneDrive-LondonSchoolofEconomics/Desktop/course_df.xlsx")
+
 #removing the duplicates because there are some changes to be done in preprocessing. Hence keeping the most simple version
 #we have a key that is unique. it differentiates to the level of seminar group as well
 #every key has a professor associated with it
 #number of students for each key
 #program of each key (our soft constraint works on this)
 
-
+course_df = course_df.copy()
 course_df = course_df.drop_duplicates(subset='Key', keep='first')
+course_df = course_df.sort_values('Program').reset_index(drop=True)
 
 schedule_df = course_df[['Key', 'Staff', 'NUMSTU', 'Program', 'Type', 'Module']].copy()
-
-
 print(schedule_df.shape)
-classrooms= pd.read_excel(r"/Users/t.reddy/Downloads/Teaching_rooms_2025_26.xlsx", header=2)
+
+classrooms= pd.read_excel("Data/Teaching_rooms_2025_26.xlsx", header=2)
 print(classrooms.shape)
-
-
 #ROOMS
 room_list = classrooms['Host Key'].tolist()
 room_capacities = classrooms['Capacity'].tolist()
 
+#room capacity lookup
 room_capacity_lookup = dict(zip(range(len(room_list)), room_capacities))
 print(room_capacity_lookup)   #148 rooms are given  unique numerical ID's
 
@@ -36,6 +39,7 @@ timeslots = [d + s for d in days for s in slots]
 # ['MT1','MT2','MT3','MT4','MT5','TT1',...,'FT5'] — 25 total
 print(f"Timeslots: {timeslots}")
 print(f"Total: {len(timeslots)}")
+
 
 course_list = course_df['Key'].tolist()
 C = len(course_list)
@@ -76,154 +80,138 @@ def decode_individual(ind):
     return df
     
 
-
-
-
-#constraints
+# H1 - a course cannot have two timeslots (each course assigned exactly once)
 def count_course_duplicates(schedule):
-    # each course should appear exactly once
     course_counts = schedule.groupby('Key').size()
-    
     duplicates = course_counts[course_counts > 1]
-    H1 = (course_counts > 1).sum()
-    
+    H1 = int((course_counts > 1).sum())
     return H1, duplicates
+
+# H2 - a professor cannot teach two courses at the same timeslot (professor conflict)
 def count_professor_conflicts(schedule):
-    # group by professor AND timeslot, count courses in each group
     prof_ts = schedule.groupby(['professor', 'timeslot']).size()
-    
-    # any group with more than 1 course = conflict
     conflicts = prof_ts[prof_ts > 1]
-    
-    # total number of conflicts
-    H2 = (prof_ts > 1).sum()
-    
+    H2 = int((prof_ts > 1).sum())
     return H2, conflicts
 
+# H3 - a room cannot have two courses at the same timeslot (room conflict)
 def count_room_conflicts(schedule):
-    # group by room AND timeslot, count courses in each group
     room_ts = schedule.groupby(['room', 'timeslot']).size()
-    
-    # any group with more than 1 course = conflict
     conflicts = room_ts[room_ts > 1]
-    
-    # total number of conflicts
-    H3 = (room_ts > 1).sum()
-    
+    H3 = int((room_ts > 1).sum())
     return H3, conflicts
+
+# H4 - a room capacity cannot be smaller than the number of students (capacity violation)
 def count_capacity_violations(schedule):
-    # directly compare numstu vs capacity for each course
+    H4 = int((schedule['numstu'] > schedule['capacity']).sum())
     violations = schedule[schedule['numstu'] > schedule['capacity']]
-    
-    # total number of violations
-    H4 = (schedule['numstu'] > schedule['capacity']).sum()
-    
     return H4, violations
 
+# S1 - courses in the same program should not overlap at the same timeslot (program overlap)
 def count_program_overlaps(schedule):
-    # group by program AND timeslot, count courses in each group
     prog_ts = schedule.groupby(['dl', 'timeslot']).size()
-    
-    # any group with more than 1 course = overlap
     conflicts = prog_ts[prog_ts > 1]
-    
-    # total number of overlaps
-    S2 = (prog_ts > 1).sum()
-    
-    return S2, conflicts
+    S1 = int((prog_ts > 1).sum())
+    return S1, conflicts
 
-
+# S2 - total courses at a timeslot cannot exceed number of rooms (global overflow)
 def count_global_overlap(schedule, num_rooms=R):
-    # count total courses per timeslot
     courses_per_ts = schedule.groupby('timeslot').size()
-    
-    # overflow = courses beyond available rooms
     overflow = (courses_per_ts - num_rooms).clip(lower=0)
-    
-    S3 = int(overflow.sum())
-    
-    return S3, overflow[overflow > 0]
+    S2 = int(overflow.sum())
+    return S2, overflow[overflow > 0]
+
 
 
 def get_course_penalties(schedule, num_rooms=R):
     course_penalty = np.zeros(len(schedule))
-    
     # precompute groupby ONCE
-    course_counts  = schedule.groupby('Key').size()
-    prof_ts        = schedule.groupby(['professor', 'timeslot']).size()
-    room_ts        = schedule.groupby(['classroom index', 'timeslot']).size()
-    prog_ts        = schedule.groupby(['dl', 'timeslot']).size()
+    course_counts = schedule.groupby('Key').size()
+    prof_ts = schedule.groupby(['professor', 'timeslot']).size()
+    room_ts = schedule.groupby(['room', 'timeslot']).size()
+    prog_ts = schedule.groupby(['dl', 'timeslot']).size()
     courses_per_ts = schedule.groupby('timeslot').size()
-    
+
     for idx, row in schedule.iterrows():
-        
+
         # H1 — hard — course duplicates
         key = row['Key']
         if course_counts[key] > 1:
-            course_penalty[idx] += (course_counts[key] - 1) * 10
-        
+            course_penalty[idx] += (course_counts[key] - 1) * 100
+
         # H2 — hard — professor conflict
         prof_key = (row['professor'], row['timeslot'])
         if prof_key in prof_ts.index and prof_ts[prof_key] > 1:
-            course_penalty[idx] += (prof_ts[prof_key] - 1) * 10
-        
+            course_penalty[idx] += (prof_ts[prof_key] - 1) * 100
+
         # H3 — hard — room conflict
-        room_key = (row['classroom index'], row['timeslot'])
+        room_key = (row['room'], row['timeslot'])
         if room_key in room_ts.index and room_ts[room_key] > 1:
-            course_penalty[idx] += (room_ts[room_key] - 1) * 10
-        
+            course_penalty[idx] += (room_ts[room_key] - 1) * 100
+
         # H4 — hard — capacity overflow
         if row['numstu'] > row['capacity']:
             overflow = row['numstu'] - row['capacity']
-            course_penalty[idx] += overflow * 10
-        
-        # S2 — soft — program overlap
+            course_penalty[idx] += overflow * 100
+
+        # S1 — soft — program overlap
         prog_key = (row['dl'], row['timeslot'])
         if prog_key in prog_ts.index and prog_ts[prog_key] > 1:
-            course_penalty[idx] += (prog_ts[prog_key] - 1) * 1
-        
-        # S3 — soft — global overflow
+            course_penalty[idx] += (prog_ts[prog_key] - 1) * 0.1
+
+        # S2 — soft — global overflow
         ts = row['timeslot']
-        if ts in courses_per_ts.index:
-            ov = courses_per_ts[ts] - num_rooms
-            if ov > 0:
-                course_penalty[idx] += ov * 1
-    
+        ov = courses_per_ts.get(ts, 0) - num_rooms
+        if ov > 0:
+            course_penalty[idx] += ov * 0.01
+
     return course_penalty
 
-
 def fitness_function(schedule, num_rooms=R):
-    # hard constraints (violations)
-    H1, _ = count_course_duplicates(schedule)  #can never be violated because of the way we design the dataframe.
+
+    # hard constraints
+    H1, _ = count_course_duplicates(schedule)   # can never be violated
     H2, _ = count_professor_conflicts(schedule)
     H3, _ = count_room_conflicts(schedule)
     H4, _ = count_capacity_violations(schedule)
-    
-    # soft constraints (violations)
-    S2, _ = count_program_overlaps(schedule)
-    S3, _ = count_global_overlap(schedule, num_rooms)
-    
+
+    # soft constraints
+    S1, _ = count_program_overlaps(schedule)
+    S2, _ = count_global_overlap(schedule, num_rooms)
+
     # weights
-    w_H1 = 10    # course duplicate
-    w_H2 = 10    # professor conflict
-    w_H3 = 10    # room conflict
-    w_H4 = 10    # capacity violation
-    w_S2 = 0.5     # program overlap
-    w_S3 = 0.5   # global timeslot overflow
-    
-    # soft constraint score
-    soft_score = (w_S2 * S2) + (w_S3 * S3)
-    
-    # hard constraint penalty (squared → always hurts a lot)
-    hard_penalty = (w_H1 * H1) + (w_H2 * H2) + (w_H3 * H3) + (w_H4 * H4)
-    
-    # fitness = make as close to 0 as possible
-    fitness = soft_score + (hard_penalty ** 2)
-    
-    return int(fitness), int(H1), int(H2), int(H3), int(H4), int(S2), int(S3)
+    w_H1 = 100   # hard
+    w_H2 = 100   # hard
+    w_H3 = 100   # hard
+    w_H4 = 100   # hard
+    w_S1 = 0.1   # soft — matches Gurobi beta
+    w_S2 = 0.01  # soft — matches Gurobi gamma
+
+    # scores
+    soft_score   = (w_S1 * S1) + (w_S2 * S2)
+    hard_penalty = (w_H1*H1) + (w_H2*H2) + (w_H3*H3) + (w_H4*H4)
+
+    # fitness — minimize towards 0
+    fitness = soft_score + hard_penalty
+
+    return int(fitness), H1, H2, H3, H4, S1, S2
+
+
+def evaluate_population(population):
+    results = []
+    for chromosome in population:
+        chromosome_df = decode_individual(chromosome)
+        fitness, H1, H2, H3, H4, S1, S2 = fitness_function(chromosome_df)
+        results.append([fitness, H1, H2, H3, H4, S1, S2])
+
+    fitness_df = pd.DataFrame(results, columns=['fitness', 'H1', 'H2', 'H3', 'H4', 'S1', 'S2'])
+    scores = fitness_df['fitness'].tolist()
+
+    return fitness_df, scores
+
 
 #as of now lets do a simple one. 
-#hta paper  does is , it crossovers with a popribabilit.
+#hta paper  does is , it crossovers with a probabilities
 # and wehen it does do the crossover, it does two different crossovers with two didfferent probabilities.
 
 # find where each program starts and ends in course_df
@@ -244,7 +232,7 @@ program_boundaries.append((current_program, start_idx, len(programs)))
 
 
 #does th crossover
-def program_crossover(parent1, parent2, program_boundaries, num_points=3):
+def program_crossover(parent1, parent2, program_boundaries=program_boundaries, num_points=3):
     c1 = np.zeros_like(parent1)
     c2 = np.zeros_like(parent2)
     
@@ -265,47 +253,60 @@ def program_crossover(parent1, parent2, program_boundaries, num_points=3):
         current_parent_c1 = parent2 if current_parent_c1 is parent1 else parent1
         current_parent_c2 = parent1 if current_parent_c2 is parent2 else parent2
         
-        prev_end = start
+        prev_end = end
     
     c1[prev_end:] = current_parent_c1[prev_end:]
     c2[prev_end:] = current_parent_c2[prev_end:]
     
     return c1, c2
 
+
+def cx_one_line(parent1, parent2):
+    c1 = parent1.copy()
+    c2 = parent2.copy()
+
+    # pick random course index
+    idx = random.randint(0, len(parent1) - 1)
+
+    # swap that course's full assignment [timeslot, room]
+    c1[idx] = parent2[idx]
+    c2[idx] = parent1[idx]
+
+    return c1, c2
+
 #the paper does the crossover overall by using everyparent in pairs after randomly shuffling.
 #amd the corssoverhappens with a probability
 
-def crossover_all(population, program_boundaries, probab_crossover=0.6):
-    # shuffle so pairing is random each generation
+def crossover_all(population, program_boundaries=program_boundaries, probab_crossover=0.6):
     pop = list(population)
     random.shuffle(pop)
-    
+
     offspring = []
-    
-    # pop_size/2 pairs → each produces 2 children
+
     for i in range(0, len(pop), 2):
         p1 = pop[i]
-        p2 = pop[i+1]
-        
+        p2 = pop[i + 1]
+
         if random.random() < probab_crossover:
-            # crossover → 2 new children
-            c1, c2 = program_crossover(p1, p2, program_boundaries, num_points=3)
+            if random.random() < 0.5:
+                # program crossover → big change
+                c1, c2 = program_crossover(p1, p2, program_boundaries, num_points=3)
+            else:
+                # cx_one_line → small change
+                c1, c2 = cx_one_line(p1, p2)
         else:
-            # no crossover → copies of parents
             c1, c2 = p1.copy(), p2.copy()
-        
+
         offspring.append(c1)
         offspring.append(c2)
-    
-    return offspring  # same size as population
 
+    return offspring
 
-
-N_MUTATIONS = int(0.05 * C)  # ~139 courses
+N_MUTATIONS = int(0.01 * C)
 
 def mut_swap_timeslots(child):
     child = child.copy()
-    for i in range(N_MUTATIONS // 2):
+    for _ in range(N_MUTATIONS // 2):
         i, j = random.sample(range(len(child)), 2)
         child[i, 0], child[j, 0] = child[j, 0], child[i, 0]
     return child
@@ -319,7 +320,7 @@ def mut_change_timeslot(child):
 
 def mut_swap_rooms(child):
     child = child.copy()
-    for i in range(N_MUTATIONS // 2):
+    for _ in range(N_MUTATIONS // 2):
         i, j = random.sample(range(len(child)), 2)
         child[i, 1], child[j, 1] = child[j, 1], child[i, 1]
     return child
@@ -382,7 +383,6 @@ def crowding_distance(chrom1, chrom2):
 def calc_crowding_distances(population, offspring):
     n = len(population)
     distances = np.zeros((n, n))
-    
     for i in range(n):
         for j in range(n):
             distances[i, j] = crowding_distance(population[i], offspring[j])
@@ -395,7 +395,6 @@ def find_matchings(distances):
     # linear sum assignment finds optimal one-to-one matching
     # minimizes total distance → most similar pairs matched
     row_indices, col_indices = linear_sum_assignment(distances)
-    
     # matches[i] = which offspring matches parent i
     matches = list(zip(row_indices, col_indices))
     return matches
@@ -403,47 +402,49 @@ def find_matchings(distances):
 #now select between parent and the child
 def selection(population, offspring, matches, scores, offspring_scores, prob_greedy):
     next_generation = []
-    
+    next_scores = []
+
     for parent_idx, offspring_idx in matches:
         parent = population[parent_idx]
         child = offspring[offspring_idx]
-        
+
         parent_fitness = scores[parent_idx]
         child_fitness = offspring_scores[offspring_idx]
-        
+
         if random.random() < prob_greedy:
-            # GREEDY → always pick better one
             if child_fitness < parent_fitness:
                 next_generation.append(child)
+                next_scores.append(child_fitness)
             else:
                 next_generation.append(parent)
+                next_scores.append(parent_fitness)
         else:
-            # PROBABILISTIC → worse can sometimes win
             p_child = parent_fitness / (parent_fitness + child_fitness)
             if random.random() < p_child:
                 next_generation.append(child)
+                next_scores.append(child_fitness)
             else:
                 next_generation.append(parent)
-    
-    return next_generation
+                next_scores.append(parent_fitness)
 
+    return next_generation, next_scores
 #in the next gen after choosing , we would like to replace the worst oes with elite onesin the previous gen
-def apply_elitism(next_generation, population, scores, n_elites=2):
-    # get top n from current population
-    elite_indices = sorted(range(len(scores)), 
-                          key=lambda x: scores[x])[:n_elites]
-    elites = [population[i] for i in elite_indices]
-    
-    # replace n worst in next generation with elites
-    next_gen_scores = [fitness_function(decode_individual(c))[0] 
-                      for c in next_generation]
+
+def apply_elitism(next_generation, next_gen_scores, old_population, old_scores, n_elites=2):
+    # get top n from OLD population
+    elite_indices = sorted(range(len(old_scores)),
+                           key=lambda x: old_scores[x])[:n_elites]
+    elites = [old_population[i] for i in elite_indices]
+
+    # find worst n in next generation
     worst_indices = sorted(range(len(next_generation)),
-                          key=lambda x: next_gen_scores[x],
-                          reverse=True)[:n_elites]
-    
+                           key=lambda x: next_gen_scores[x],
+                           reverse=True)[:n_elites]
+
+    # replace worst with elites
     for k, idx in enumerate(worst_indices):
         next_generation[idx] = elites[k]
-    
+
     return next_generation
 
 def update_prob_greedy(min_prob_greedy=0.4, epoch=0, max_epochs=100):
@@ -451,41 +452,58 @@ def update_prob_greedy(min_prob_greedy=0.4, epoch=0, max_epochs=100):
     return min(prob_greedy, 1.0)
 
 
-
-
-
-
-
-
-
-
-
-
-
+#minimum S1 contraint by pigeon hole principle
+courses_per_program = {prog: (end - start) for prog, start, end in program_boundaries}
+min_S1 = sum(max(0, count - 25) for count in courses_per_program.values())
+print(f"Minimum possible S1: {min_S1}")
 
 
 
 
 # To generate a population
 POP_SIZE = 200
-population = np.array([random_individual() for i in range(POP_SIZE)])
+population = [random_individual() for _ in range(POP_SIZE)]
 
 
-def genetic_algorithm(population, n_gen=100, patience=20):
-    
+def print_best(best_chromosome, best_fitness, gen):
+    best_df = decode_individual(best_chromosome)
+    _, H1, H2, H3, H4, S1, S2 = fitness_function(best_df)
+    print(f"\n Best chromosome (gen {gen}):")
+    print(f"   fitness={best_fitness}, H1={H1}, H2={H2}, H3={H3}, H4={H4}, S1={S1}, S2={S2}")
+
+
+def genetic_algorithm(population, n_gen=100, patience=30):
+
     best_fitness = float('inf')
     best_chromosome = None
     no_improve_count = 0
-    history = []
     prob_greedy = 0.4
 
+    # tracking history
+    history_fitness  = []
+    history_hard     = []
+    history_soft     = []
+    history_gen_time = []
+
+    total_start = time.time()
+
     for i in range(n_gen):
+
+
+        gen_start = time.time()
 
         # evaluate population
         fitness_df, scores = evaluate_population(population)
         current_best = min(scores)
         current_best_idx = scores.index(current_best)
-        history.append(current_best)
+        best_row = fitness_df.iloc[current_best_idx]
+
+        # track metrics
+        hard = int(best_row['H1']) + int(best_row['H2']) + int(best_row['H3']) + int(best_row['H4'])
+        soft = int(best_row['S1']) + int(best_row['S2'])
+        history_fitness.append(current_best)
+        history_hard.append(hard)
+        history_soft.append(soft)
 
         # track best ever
         if current_best < best_fitness:
@@ -495,35 +513,42 @@ def genetic_algorithm(population, n_gen=100, patience=20):
         else:
             no_improve_count += 1
 
-        # print progress
-        best_row = fitness_df.iloc[current_best_idx]
-        print(f"Gen {i+1}: best={current_best}, "
+        # add this before stopping conditions
+        print(f"Gen {i + 1}: best={current_best}, "
               f"H1={int(best_row['H1'])}, "
               f"H2={int(best_row['H2'])}, "
               f"H3={int(best_row['H3'])}, "
               f"H4={int(best_row['H4'])}, "
+              f"S1={int(best_row['S1'])}, "
               f"S2={int(best_row['S2'])}, "
-              f"S3={int(best_row['S3'])}, "
               f"no_improve={no_improve_count}, "
               f"prob_greedy={prob_greedy:.2f}")
 
-        # condition 3 — hard constraints = 0 → return CURRENT
-        if (int(best_row['H1'])==0 and 
-            int(best_row['H2'])==0 and 
-            int(best_row['H3'])==0 and 
-            int(best_row['H4'])==0):
-            print(f"All hard constraints satisfied at gen {i+1}!")
-            return population[current_best_idx], fitness_df, history
 
-        # condition 1 — patience exceeded → return BEST EVER
+        # stopping condition 1: patience exceeded → return BEST EVER
         if no_improve_count >= patience:
-            print(f" Patience exceeded at gen {i+1} — returning best ever found")
-            return best_chromosome, fitness_df, history
+            print(f" Patience exceeded at gen {i+1}")
+            print_best(best_chromosome, best_fitness, i+1)
+            history_gen_time.append(time.time() - gen_start)
+            break
 
-        # condition 2 — max generations → return BEST EVER
+        # stopping condition 2: max generations → return BEST EVER
         if i == n_gen - 1:
-            print(f" Max generations reached — returning best ever found")
-            return best_chromosome, fitness_df, history
+            print(f" Max generations reached")
+            print_best(best_chromosome, best_fitness, i+1)
+            history_gen_time.append(time.time() - gen_start)
+            break
+
+        # ── stopping condition 3: hard=0 and S1=min → optimal ──
+        if (int(best_row['H1'])==0 and
+            int(best_row['H2'])==0 and
+            int(best_row['H3'])==0 and
+            int(best_row['H4'])==0 and
+            int(best_row['S1']) <= min_S1):
+            print(f" Optimal solution found at gen {i+1}!")
+            print_best(population[current_best_idx], current_best, i+1)
+            history_gen_time.append(time.time() - gen_start)
+            break
 
         # step 1: crossover
         offspring = crossover_all(population, program_boundaries, probab_crossover=0.6)
@@ -531,24 +556,74 @@ def genetic_algorithm(population, n_gen=100, patience=20):
         # step 2: mutation
         offspring = mutation_all(offspring)
 
-        # step 3: GNN (when ready)
+        # ── step 3: GNN (when ready) ──
         # offspring = GNN_improvement(offspring)
 
         # step 4: evaluate offspring
         offspring_fitness_df, offspring_scores = evaluate_population(offspring)
 
-        # step 5: crowding distances + matching
+        #  step 5: crowding distances + matching
         distances = calc_crowding_distances(population, offspring)
         matches = find_matchings(distances)
 
         # step 6: selection
-        population = selection(population, offspring, matches,
-                              scores, offspring_scores, prob_greedy)
+        old_population = list(population)
+        old_scores = list(scores)
 
-        # step 7: elitism
-        population = apply_elitism(population, scores, n_elites=2)
+        population, selected_scores = selection(population, offspring, matches,
+                                                scores, offspring_scores, prob_greedy)
+
+        population = apply_elitism(population, selected_scores,
+                                   old_population, old_scores, n_elites=2)
 
         # step 8: update prob_greedy
         prob_greedy = update_prob_greedy(min_prob_greedy=0.4, epoch=i, max_epochs=n_gen)
 
-    return best_chromosome, fitness_df, history
+        # track generation time
+        history_gen_time.append(time.time() - gen_start)
+
+    # total time
+    total_time = time.time() - total_start
+    print(f"\n Total time: {total_time:.2f}s ({total_time/60:.2f} mins)")
+
+    # plots
+    gens = range(1, len(history_fitness) + 1)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('GA Performance', fontsize=16)
+
+    # fitness
+    axes[0, 0].plot(gens, history_fitness, color='blue')
+    axes[0, 0].set_title('Best Fitness per Generation')
+    axes[0, 0].set_xlabel('Generation')
+    axes[0, 0].set_ylabel('Fitness')
+    axes[0, 0].grid(True)
+
+    # hard constraints
+    axes[0, 1].plot(gens, history_hard, color='red')
+    axes[0, 1].set_title('Hard Constraint Violations')
+    axes[0, 1].set_xlabel('Generation')
+    axes[0, 1].set_ylabel('Total Hard Violations')
+    axes[0, 1].grid(True)
+
+    # soft constraints
+    axes[1, 0].plot(gens, history_soft, color='green')
+    axes[1, 0].set_title('Soft Constraint Violations')
+    axes[1, 0].set_xlabel('Generation')
+    axes[1, 0].set_ylabel('Total Soft Violations')
+    axes[1, 0].grid(True)
+
+    # generation time
+    axes[1, 1].plot(gens, history_gen_time, color='orange')
+    axes[1, 1].set_title('Time per Generation')
+    axes[1, 1].set_xlabel('Generation')
+    axes[1, 1].set_ylabel('Time (seconds)')
+    axes[1, 1].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    return best_chromosome, history_fitness, history_hard, history_soft, history_gen_time
+
+best_chromosome, history_fitness, history_hard, history_soft, history_gen_time = genetic_algorithm(population, n_gen=100, patience=30)
+best_schedule = decode_individual(best_chromosome)
+print(best_schedule)
