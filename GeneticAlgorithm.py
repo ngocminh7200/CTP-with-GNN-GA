@@ -624,6 +624,6 @@ def genetic_algorithm(population, n_gen=100, patience=30):
 
     return best_chromosome, history_fitness, history_hard, history_soft, history_gen_time
 
-best_chromosome, history_fitness, history_hard, history_soft, history_gen_time = genetic_algorithm(population, n_gen=100, patience=30)
+best_chromosome, history_fitness, history_hard, history_soft, history_gen_time = genetic_algorithm(population, n_gen=100, patience=20)
 best_schedule = decode_individual(best_chromosome)
 print(best_schedule)
