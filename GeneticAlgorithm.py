@@ -463,7 +463,7 @@ print(f"Minimum possible S1: {min_S1}")
 # To generate a population
 POP_SIZE = 200
 population = [random_individual() for _ in range(POP_SIZE)]
-
+#import this very population in a dif.py file to main homegenity amongst Ga anf Ga+GNN
 
 def print_best(best_chromosome, best_fitness, gen):
     best_df = decode_individual(best_chromosome)
